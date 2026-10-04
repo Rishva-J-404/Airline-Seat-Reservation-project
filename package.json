@@ -1,0 +1,36 @@
+{
+  "name": "airline-dsa-app",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -p \"[{name}]\" -n \"BACKEND,FRONTEND\" -c \"magenta.bold,cyan.bold\" \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:frontend": "vite",
+    "dev:backend": "node backend/src/server.js",
+    "build": "vite build",
+    "test": "node --experimental-strip-types --test src/algorithms/__tests__/dsa.test.ts && node --test backend/tests/*.test.js",
+    "test:frontend": "node --experimental-strip-types --test src/algorithms/__tests__/dsa.test.ts",
+    "test:backend": "node --test backend/tests/*.test.js",
+    "lint": "oxlint",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^1.48.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "autoprefixer": "^10.6.1",
+    "concurrently": "^10.0.5",
+    "oxlint": "^1.81.0",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^3.4.19",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0"
+  }
+}
