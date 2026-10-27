@@ -32,6 +32,7 @@ export const BookingConfirmation: React.FC = () => {
 
   const [passengerName, setPassengerName] = useState<string>(user?.name || '');
   const [error, setError] = useState<string>('');
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [confirmedBooking, setConfirmedBooking] = useState<Booking | null>(null);
   const [journeyDate] = useState<Date>(() => new Date());
 
@@ -49,14 +50,35 @@ export const BookingConfirmation: React.FC = () => {
     }
 
     setError('');
+    setIsSubmitting(true);
 
     let backendReceipt = '';
     let serverBookingRef = '';
+    let serverReservationId: number | undefined;
 
     try {
-      const flightId = (selectedFlight as any).id || (selectedFlight.flightNumber === 'AI-201' ? 1 : selectedFlight.flightNumber === '6E-402' ? 2 : selectedFlight.flightNumber === 'SG-112' ? 3 : selectedFlight.flightNumber === 'UK-305' ? 4 : 5);
-      const colIndex = selectedSeat.col.charCodeAt(0) - 65;
-      const seatId = (flightId - 1) * 80 + (selectedSeat.row - 1) * 4 + colIndex + 1;
+      const flightId =
+        (selectedFlight as any).id ||
+        (selectedFlight.flightNumber === 'AI-201'
+          ? 1
+          : selectedFlight.flightNumber === '6E-402'
+          ? 2
+          : selectedFlight.flightNumber === 'SG-112'
+          ? 3
+          : selectedFlight.flightNumber === 'UK-305'
+          ? 4
+          : selectedFlight.flightNumber === 'AI-999'
+          ? 6
+          : 5);
+
+      // Enforce authoritative PostgreSQL database seat ID; prevent invented arithmetic seat IDs
+      if (!selectedSeat.dbId) {
+        setError('Authoritative database seat identifier is missing. Please re-select your seat from the cabin layout.');
+        setIsSubmitting(false);
+        return;
+      }
+
+      const seatId = selectedSeat.dbId;
 
       const res = await reservationsAPI.create({
         flightId,
@@ -67,15 +89,22 @@ export const BookingConfirmation: React.FC = () => {
       if (res.reservation?.bookingReference) {
         serverBookingRef = res.reservation.bookingReference;
       }
+      if (res.reservation?.id) {
+        serverReservationId = res.reservation.id;
+      }
       if (res.dsaReceipt) {
-        backendReceipt = `${res.dsaReceipt.co1_queue} | ${res.dsaReceipt.co2_manifest} | ${res.dsaReceipt.co3_bst}`;
+        const bstReceipt = res.dsaReceipt.co4_bst || res.dsaReceipt.co3_bst || 'CO4 BST: Indexed';
+        backendReceipt = `${res.dsaReceipt.co1_queue} | ${res.dsaReceipt.co2_manifest} | ${bstReceipt}`;
       }
     } catch (apiErr: any) {
-      if (apiErr?.statusCode === 409 || apiErr?.code === 'SEAT_ALREADY_RESERVED') {
+      if (apiErr?.statusCode === 409 || apiErr?.code === 'SEAT_ALREADY_RESERVED' || apiErr?.code === 'SEAT_UNAVAILABLE') {
         setError('Seat already reserved! Another transaction has booked this seat. Please select a different seat.');
+        setIsSubmitting(false);
         return;
       }
       // If offline or non-409, allow seamless client booking
+    } finally {
+      setIsSubmitting(false);
     }
 
     const bookingId = serverBookingRef || generateBookingId();
@@ -94,6 +123,7 @@ export const BookingConfirmation: React.FC = () => {
     const newBooking: Booking = {
       bookingId,
       id: bookingId,
+      reservationId: serverReservationId,
       userId: user?.id,
       userEmail: user?.email,
       passenger,
@@ -329,6 +359,7 @@ export const BookingConfirmation: React.FC = () => {
                   variant="accent"
                   size="md"
                   fullWidth
+                  loading={isSubmitting}
                   icon={<ArrowRight size={16} />}
                 >
                   Confirm Booking &amp; Issue Ticket

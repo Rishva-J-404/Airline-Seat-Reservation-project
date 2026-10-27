@@ -146,6 +146,42 @@ export function isUsingRealPg() {
   return useRealPg && Boolean(pgPool);
 }
 
+export function assertSafeTestDatabase(urlOrConfig) {
+  const urlStr = typeof urlOrConfig === 'string' ? urlOrConfig : (urlOrConfig?.connectionString || '');
+  if (urlStr) {
+    try {
+      const parsed = new URL(urlStr);
+      const dbName = parsed.pathname.replace(/^\//, '');
+      if (!dbName.includes('test') && process.env.ALLOW_TEST_DB_WIPE !== 'true') {
+        throw new Error(`[SAFETY GUARD] Targeted database '${dbName}' is not a designated test database. Test database name must contain 'test'.`);
+      }
+    } catch (err) {
+      if (err.message.includes('SAFETY GUARD')) throw err;
+    }
+  }
+}
+
+export function configurePgPool(connectionStringOrConfig) {
+  assertSafeTestDatabase(connectionStringOrConfig);
+  if (pgPool) {
+    try {
+      pgPool.end();
+    } catch {}
+  }
+  const config = typeof connectionStringOrConfig === 'string'
+    ? { connectionString: connectionStringOrConfig }
+    : connectionStringOrConfig;
+
+  pgPool = new Pool({
+    ...config,
+    max: 20,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 3000,
+  });
+  useRealPg = true;
+  return pgPool;
+}
+
 /**
  * Executes a callback within a managed transaction.
  *
@@ -300,10 +336,17 @@ function executeMemQuery(sql, params) {
   }
 
   // 4. SELECT all flights
-  if (normalized.includes('FROM flights') && !normalized.includes('WHERE id = $1')) {
+  if (normalized.includes('FROM flights') && !normalized.includes('WHERE id = $1') && !normalized.includes('WHERE f.id = $1')) {
     let rows = memDb.flights.map(f => {
       const availCount = memDb.seats.filter(s => s.flight_id === f.id && s.status === 'available').length;
-      return { ...f, availableSeats: availCount, totalSeats: 80 };
+      const totalCount = memDb.seats.filter(s => s.flight_id === f.id).length || 80;
+      return {
+        ...f,
+        availableSeats: availCount,
+        available_seats: availCount,
+        totalSeats: totalCount,
+        total_seats: totalCount,
+      };
     });
 
     if (params.length >= 2 && params[0] && params[1]) {
@@ -315,11 +358,29 @@ function executeMemQuery(sql, params) {
   }
 
   // 5. SELECT flight by ID
-  if (normalized.includes('FROM flights WHERE id = $1')) {
+  if (normalized.includes('FROM flights WHERE id = $1') || (normalized.includes('FROM flights') && normalized.includes('WHERE f.id = $1'))) {
     const flight = memDb.flights.find(f => f.id === Number(params[0]));
     if (!flight) return { rows: [], rowCount: 0 };
     const availCount = memDb.seats.filter(s => s.flight_id === flight.id && s.status === 'available').length;
-    return { rows: [{ ...flight, availableSeats: availCount, totalSeats: 80 }], rowCount: 1 };
+    const totalCount = memDb.seats.filter(s => s.flight_id === flight.id).length || 80;
+    return {
+      rows: [{
+        ...flight,
+        availableSeats: availCount,
+        available_seats: availCount,
+        totalSeats: totalCount,
+        total_seats: totalCount,
+      }],
+      rowCount: 1,
+    };
+  }
+
+  // 5b. SELECT COUNT of seats for flight
+  if (normalized.includes('COUNT(*)') && normalized.includes('FROM seats WHERE flight_id = $1 AND status = $2')) {
+    const flightId = Number(params[0]);
+    const statusVal = String(params[1]);
+    const count = memDb.seats.filter(s => s.flight_id === flightId && s.status === statusVal).length;
+    return { rows: [{ count: String(count), available_count: String(count) }], rowCount: 1 };
   }
 
   // 6. SELECT seats for a flight
@@ -404,8 +465,8 @@ function executeMemQuery(sql, params) {
     return { rows: matches.map(m => ({ ...m })), rowCount: matches.length };
   }
 
-  // 12. SELECT reservations by user
-  if (normalized.includes('FROM reservations') && normalized.includes('WHERE user_id = $1')) {
+  // 12. SELECT reservations by user (Joined across flights, reservation_seats, and seats)
+  if (normalized.includes('FROM reservations') && (normalized.includes('WHERE user_id = $1') || normalized.includes('WHERE r.user_id = $1'))) {
     const userId = Number(params[0]);
     const userRes = memDb.reservations
       .filter(r => r.user_id === userId)
@@ -416,18 +477,31 @@ function executeMemQuery(sql, params) {
         return {
           ...r,
           flight,
+          flight_number: flight?.flight_number,
+          airline: flight?.airline,
+          origin: flight?.origin,
+          destination: flight?.destination,
+          departure_time: flight?.departure_time,
+          arrival_time: flight?.arrival_time,
+          duration: flight?.duration,
+          seat_id: seat?.id,
+          seat_number: seat?.seat_number,
           passenger_name: resSeat?.passenger_name,
           passenger_id_code: resSeat?.passenger_id_code,
-          seat_number: seat?.seat_number,
         };
       });
     return { rows: userRes, rowCount: userRes.length };
   }
 
-  // 13. SELECT reservation by ID
-  if (normalized.includes('FROM reservations WHERE id = $1')) {
-    const rId = Number(params[0]);
-    const r = memDb.reservations.find(res => res.id === rId);
+  // 13. SELECT reservation by ID or booking reference
+  if (normalized.includes('FROM reservations') && !normalized.includes('WHERE user_id = $1') && !normalized.includes('WHERE r.user_id = $1')) {
+    const p1 = params[0];
+    const p2 = params[1] !== undefined ? params[1] : p1;
+    const r = memDb.reservations.find(res =>
+      res.id === Number(p1) ||
+      res.booking_reference.toLowerCase() === String(p1).toLowerCase() ||
+      res.booking_reference.toLowerCase() === String(p2).toLowerCase()
+    );
     if (!r) return { rows: [], rowCount: 0 };
     const flight = memDb.flights.find(f => f.id === r.flight_id);
     const resSeat = memDb.reservation_seats.find(rs => rs.reservation_id === r.id);
@@ -436,21 +510,35 @@ function executeMemQuery(sql, params) {
       rows: [{
         ...r,
         flight,
+        flight_number: flight?.flight_number,
+        airline: flight?.airline,
+        origin: flight?.origin,
+        destination: flight?.destination,
+        departure_time: flight?.departure_time,
+        arrival_time: flight?.arrival_time,
+        duration: flight?.duration,
+        seat_id: resSeat?.seat_id,
+        seat_number: seat?.seat_number,
         passenger_name: resSeat?.passenger_name,
         passenger_id_code: resSeat?.passenger_id_code,
-        seat_number: seat?.seat_number,
-        seat_id: resSeat?.seat_id,
       }],
       rowCount: 1,
     };
   }
 
-  // 14. CANCEL reservation with conditional check
-  if (normalized.startsWith('UPDATE reservations SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND status = $3') ||
-      normalized.startsWith('UPDATE reservations SET status = $1 WHERE id = $2 AND status = $3')) {
-    const [status, id, expectedStatus] = params;
-    const r = memDb.reservations.find(res => res.id === Number(id));
-    if (r && r.status === expectedStatus) {
+  // 14. CANCEL reservation with conditional check (supports ID or booking_reference)
+  if (normalized.startsWith('UPDATE reservations SET status = $1') && normalized.includes('status = $')) {
+    const status = params[0];
+    const idOrRef = params[1];
+    const expectedStatus = params[params.length - 1];
+
+    const r = memDb.reservations.find(res =>
+      (res.id === Number(idOrRef) ||
+       res.booking_reference.toLowerCase() === String(idOrRef).toLowerCase() ||
+       (params[2] !== undefined && res.booking_reference.toLowerCase() === String(params[2]).toLowerCase())) &&
+      res.status === expectedStatus
+    );
+    if (r) {
       r.status = status;
       r.updated_at = new Date();
       return { rows: [{ ...r }], rowCount: 1 };
@@ -461,13 +549,22 @@ function executeMemQuery(sql, params) {
   if (normalized.startsWith('UPDATE reservations SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2') ||
       normalized.startsWith('UPDATE reservations SET status = $1 WHERE id = $2')) {
     const [status, id] = params;
-    const r = memDb.reservations.find(res => res.id === Number(id));
+    const r = memDb.reservations.find(res => res.id === Number(id) || res.booking_reference === String(id));
     if (r) {
       r.status = status;
       r.updated_at = new Date();
       return { rows: [{ ...r }], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };
+  }
+
+  // 14b. WAITING LIST: Check duplicate active entry
+  if (normalized.includes('FROM waiting_list WHERE flight_id = $1 AND user_id = $2 AND status = $3')) {
+    const flightId = Number(params[0]);
+    const userId = Number(params[1]);
+    const statusVal = params[2] || 'waiting';
+    const found = memDb.waiting_list.filter(w => w.flight_id === flightId && w.user_id === userId && w.status === statusVal);
+    return { rows: found.map(w => ({ ...w })), rowCount: found.length };
   }
 
   // 15. WAITING LIST: INSERT

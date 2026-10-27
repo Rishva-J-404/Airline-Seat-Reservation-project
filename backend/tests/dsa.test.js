@@ -52,6 +52,7 @@ describe('Server-Side CO2: Singly Linked List', () => {
 
     assert.strictEqual(list.getSize(), 3);
     assert.deepStrictEqual(list.toArray(), ['First', 'Second', 'Third']);
+    assert.strictEqual(list.getTail(), 'Third');
   });
 
   it('should search by predicate correctly', () => {
@@ -76,14 +77,50 @@ describe('Server-Side CO2: Singly Linked List', () => {
     assert.strictEqual(list.deleteByKey(item => item === 'B'), true);
     assert.strictEqual(list.getSize(), 2);
     assert.deepStrictEqual(list.toArray(), ['A', 'C']);
+    assert.strictEqual(list.getTail(), 'C');
 
     // Delete head
     assert.strictEqual(list.deleteByKey(item => item === 'A'), true);
     assert.deepStrictEqual(list.toArray(), ['C']);
+    assert.strictEqual(list.getTail(), 'C');
+  });
+
+  it('should maintain tail pointer invariants on tail deletion, single element removal, and clear', () => {
+    const list = new LinkedList();
+    list.insertAtTail('Node1');
+    list.insertAtTail('Node2');
+    list.insertAtTail('Node3');
+    assert.strictEqual(list.getTail(), 'Node3');
+
+    // Delete tail node: tail pointer must become Node2
+    const deletedTail = list.deleteByKey(item => item === 'Node3');
+    assert.strictEqual(deletedTail, true);
+    assert.strictEqual(list.getTail(), 'Node2');
+    assert.strictEqual(list.getSize(), 2);
+
+    // Delete head node: remaining is Node2 (head and tail)
+    list.deleteByKey(item => item === 'Node1');
+    assert.strictEqual(list.getTail(), 'Node2');
+    assert.strictEqual(list.getHead(), 'Node2');
+    assert.strictEqual(list.getSize(), 1);
+
+    // Delete only remaining element: head and tail must be null
+    list.deleteByKey(item => item === 'Node2');
+    assert.strictEqual(list.getHead(), null);
+    assert.strictEqual(list.getTail(), null);
+    assert.strictEqual(list.getSize(), 0);
+
+    // Verify clear resets tail
+    list.insertAtHead('Temp');
+    assert.strictEqual(list.getTail(), 'Temp');
+    list.clear();
+    assert.strictEqual(list.getHead(), null);
+    assert.strictEqual(list.getTail(), null);
+    assert.strictEqual(list.getSize(), 0);
   });
 });
 
-describe('Server-Side CO3: Binary Search Tree', () => {
+describe('Server-Side CO4: Binary Search Tree', () => {
   it('should insert keys and preserve BST invariant with in-order traversal', () => {
     const bst = new BinarySearchTree();
     [1004, 1002, 1006, 1001, 1003, 1005, 1007].forEach(k => bst.insert(k));

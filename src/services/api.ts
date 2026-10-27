@@ -4,7 +4,13 @@
 // with JWT bearer auth, error normalization, and health checks
 // ============================================================
 
-import type { Flight, User } from '../types';
+import type {
+  Flight,
+  User,
+  JoinWaitingListPayload,
+  WaitingListResponse,
+  WaitingListStatusResponse,
+} from '../types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL as string) || 'http://localhost:5000/api';
 const TOKEN_KEY = 'airline_jwt_token';
@@ -243,7 +249,8 @@ export interface ReservationResponse {
   dsaReceipt?: {
     co1_queue: string;
     co2_manifest: string;
-    co3_bst: string;
+    co3_bst?: string;
+    co4_bst?: string;
   };
 }
 
@@ -282,9 +289,22 @@ export const reservationsAPI = {
     return request<{ reservation: any }>(`/reservations/${id}`, { method: 'GET' });
   },
 
-  cancel: async (id: number | string): Promise<{ message: string; reservationId: number; status: string }> => {
-    return request<{ message: string; reservationId: number; status: string }>(`/reservations/${id}`, {
+  cancel: async (id: number | string): Promise<{ message: string; reservationId: number; bookingReference?: string; status: string }> => {
+    return request<{ message: string; reservationId: number; bookingReference?: string; status: string }>(`/reservations/${id}`, {
       method: 'DELETE',
+    });
+  },
+
+  joinWaitingList: async (payload: JoinWaitingListPayload): Promise<WaitingListResponse> => {
+    return request<WaitingListResponse>('/reservations/waiting-list', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  getWaitingListStatus: async (flightId: number | string): Promise<WaitingListStatusResponse> => {
+    return request<WaitingListStatusResponse>(`/reservations/waiting-list/${flightId}`, {
+      method: 'GET',
     });
   },
 };

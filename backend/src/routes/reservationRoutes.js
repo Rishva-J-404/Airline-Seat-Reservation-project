@@ -19,13 +19,13 @@ const router = Router();
 // All reservation endpoints require JWT authentication
 router.use(authenticate);
 
-router.post('/', validateReservation, createReservation);
-router.get('/', getReservations);
-router.get('/:id(\\d+)', getReservationById);
-router.delete('/:id(\\d+)', cancelReservation);
-
-// CO1 Waiting List Queue endpoints
+// CO1 Waiting List Queue endpoints (declared before /:id)
 router.post('/waiting-list', joinWaitingList);
 router.get('/waiting-list/:flightId', getWaitingListStatus);
+
+router.post('/', validateReservation, createReservation);
+router.get('/', getReservations);
+router.get('/:id', getReservationById);
+router.delete('/:id', cancelReservation);
 
 export default router;

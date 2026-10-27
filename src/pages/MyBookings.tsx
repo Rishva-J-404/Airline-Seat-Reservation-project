@@ -39,6 +39,8 @@ export const MyBookings: React.FC = () => {
   // Modal states
   const [viewTicketBooking, setViewTicketBooking] = useState<Booking | null>(null);
   const [cancellingBooking, setCancellingBooking] = useState<Booking | null>(null);
+  const [isCancelling, setIsCancelling] = useState<boolean>(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   const handleSearch = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -98,37 +100,56 @@ export const MyBookings: React.FC = () => {
   const handleConfirmCancel = async () => {
     if (!cancellingBooking) return;
 
-    const id = cancellingBooking.bookingId;
-    dispatch({ type: 'CANCEL_BOOKING', payload: id });
+    setIsCancelling(true);
+    setCancelError(null);
 
-    // Free seat on server database if connected
+    const bookingRef = cancellingBooking.bookingId;
+    // Prefer authoritative PostgreSQL numeric reservation ID if known, else booking reference
+    const cancelTarget = cancellingBooking.reservationId || bookingRef;
+
     try {
-      const numericId = parseInt(id.replace(/\D/g, ''), 10);
-      if (!isNaN(numericId)) {
-        const res = await reservationsAPI.cancel(numericId);
-        if (res && (res as any).promotedPassenger) {
-          addLog(
-            'Waiting List Promotion (CO1 Queue)',
-            `Seat ${cancellingBooking.seat.id} automatically reallocated to waiting passenger ${(res as any).promotedPassenger.passengerName} via FIFO queue.`,
-            'queue'
-          );
-        }
+      const res = await reservationsAPI.cancel(cancelTarget);
+
+      // Successfully cancelled on server; now update client state
+      dispatch({ type: 'CANCEL_BOOKING', payload: bookingRef });
+
+      if (res && (res as any).promotedPassenger) {
+        addLog(
+          'Waiting List Promotion (CO1 Queue)',
+          `Seat ${cancellingBooking.seat.id} automatically reallocated to waiting passenger ${(res as any).promotedPassenger.passengerName} via FIFO queue.`,
+          'queue'
+        );
       }
-    } catch {
-      // Standalone mode - client state already cancelled
+
+      addLog(
+        'Booking Cancellation',
+        'Booking ' +
+          bookingRef +
+          ' marked as cancelled. Removed passenger record for ' +
+          cancellingBooking.passenger.passengerName +
+          ' from Linked List (O(n) search + O(1) unlinking). Seat released.',
+        'linkedlist'
+      );
+
+      setCancellingBooking(null);
+    } catch (err: any) {
+      if (err?.code === 'NETWORK_ERROR' || err?.statusCode === 0) {
+        // Standalone / offline demo fallback
+        dispatch({ type: 'CANCEL_BOOKING', payload: bookingRef });
+        addLog(
+          'Booking Cancellation (Standalone)',
+          'Booking ' +
+            bookingRef +
+            ' marked as cancelled locally (server unreachable).',
+          'linkedlist'
+        );
+        setCancellingBooking(null);
+      } else {
+        setCancelError(err?.message || 'Failed to cancel reservation on server.');
+      }
+    } finally {
+      setIsCancelling(false);
     }
-
-    addLog(
-      'Booking Cancellation',
-      'Booking ' +
-        id +
-        ' marked as cancelled. Removed passenger record for ' +
-        cancellingBooking.passenger.passengerName +
-        ' from Linked List (O(n) search + O(1) unlinking). Seat released.',
-      'linkedlist'
-    );
-
-    setCancellingBooking(null);
   };
 
   return (
@@ -378,7 +399,10 @@ export const MyBookings: React.FC = () => {
                             size="sm"
                             variant="danger"
                             disabled={isCancelled}
-                            onClick={() => setCancellingBooking(booking)}
+                            onClick={() => {
+                              setCancelError(null);
+                              setCancellingBooking(booking);
+                            }}
                           >
                             Cancel
                           </Button>
@@ -411,7 +435,12 @@ export const MyBookings: React.FC = () => {
       {cancellingBooking && (
         <Modal
           isOpen={true}
-          onClose={() => setCancellingBooking(null)}
+          onClose={() => {
+            if (!isCancelling) {
+              setCancellingBooking(null);
+              setCancelError(null);
+            }
+          }}
           title="Confirm Ticket Cancellation"
           size="sm"
         >
@@ -426,17 +455,28 @@ export const MyBookings: React.FC = () => {
               </div>
             </div>
 
+            {cancelError && (
+              <div className="p-3 rounded-lg bg-rose-100 border border-rose-300 text-rose-900 font-medium">
+                {cancelError}
+              </div>
+            )}
+
             <div className="flex justify-end gap-2 pt-2">
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => setCancellingBooking(null)}
+                disabled={isCancelling}
+                onClick={() => {
+                  setCancellingBooking(null);
+                  setCancelError(null);
+                }}
               >
                 Keep Ticket
               </Button>
               <Button
                 variant="danger"
                 size="sm"
+                loading={isCancelling}
                 onClick={handleConfirmCancel}
               >
                 Confirm Cancellation

@@ -17,6 +17,7 @@ import { useApp } from '../context/AppContext';
 import { recommendTopSeats } from '../services/seatRecommendation';
 import type { RecommendationResult } from '../services/seatRecommendation';
 import { generateSeats } from '../data/seats';
+import { flightsAPI } from '../services/api';
 import { Button } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
@@ -77,6 +78,8 @@ export const AIRecommendation: React.FC = () => {
   const [topSeats, setTopSeats] = useState<RecommendationResult[]>([]);
   const [selectedRankIndex, setSelectedRankIndex] = useState<number>(0);
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [emptyMessage, setEmptyMessage] = useState<string | null>(null);
 
   const handleToggle = (key: keyof SeatPreferences) => {
     setPreferences((prev) => {
@@ -92,9 +95,67 @@ export const AIRecommendation: React.FC = () => {
     });
   };
 
-  const handleAnalyze = () => {
-    const seats = generateSeats();
-    const ranked = recommendTopSeats(preferences, seats, 3);
+  const handleAnalyze = async () => {
+    setAnalyzing(true);
+    setEmptyMessage(null);
+    let candidateSeats: Seat[] = [];
+
+    const flightId = state.selectedFlight
+      ? ((state.selectedFlight as any).id ||
+         (state.selectedFlight.flightNumber === 'AI-201'
+           ? 1
+           : state.selectedFlight.flightNumber === '6E-402'
+           ? 2
+           : state.selectedFlight.flightNumber === 'SG-112'
+           ? 3
+           : state.selectedFlight.flightNumber === 'UK-305'
+           ? 4
+           : state.selectedFlight.flightNumber === 'AI-999'
+           ? 6
+           : 5))
+      : 1;
+
+    try {
+      const res = await flightsAPI.getSeats(flightId);
+      if (res?.seats && res.seats.length > 0) {
+        candidateSeats = res.seats.map((s) => ({
+          id: s.seatNumber,
+          dbId: typeof s.id === 'number' ? s.id : Number(s.id),
+          row: s.row,
+          col: s.col as 'A' | 'B' | 'C' | 'D',
+          type: s.type,
+          hasExtraLegroom: s.hasExtraLegroom,
+          isQuietZone: s.isQuietZone,
+          isFrontRow: s.isFrontRow,
+          status: s.status as any,
+        }));
+      }
+    } catch {
+      // Offline fallback: generate seats with deterministic dbId mapping
+      candidateSeats = generateSeats().map((s, idx) => ({
+        ...s,
+        dbId: (flightId - 1) * 80 + idx + 1,
+      }));
+    }
+
+    if (candidateSeats.length === 0) {
+      candidateSeats = generateSeats().map((s, idx) => ({
+        ...s,
+        dbId: (flightId - 1) * 80 + idx + 1,
+      }));
+    }
+
+    // Filter strictly to available seats (never recommend unavailable/occupied seats)
+    const availableSeats = candidateSeats.filter((s) => s.status === 'available');
+
+    if (availableSeats.length === 0) {
+      setTopSeats([]);
+      setEmptyMessage('All cabin seats on this flight are currently occupied. Join the FIFO waiting list on the seat selection page to be notified when a seat becomes available.');
+      setAnalyzing(false);
+      return;
+    }
+
+    const ranked = recommendTopSeats(preferences, availableSeats, 3);
     setTopSeats(ranked);
     setSelectedRankIndex(0);
 
@@ -110,12 +171,13 @@ export const AIRecommendation: React.FC = () => {
       dispatch({ type: 'INCREMENT_AI' });
       addLog(
         'Intelligent Recommendation',
-        `Multi-factor greedy heuristic evaluated ${seats.length} cabin seats. Top 3 recommendations: ${ranked
+        `Multi-factor greedy heuristic evaluated ${availableSeats.length} available cabin seats. Top 3 recommendations: ${ranked
           .map((r, i) => `#${i + 1} Seat ${r.seat.id} (${r.score}/100)`)
           .join(', ')}.`,
         'ai'
       );
     }
+    setAnalyzing(false);
   };
 
   const handleSelectSeat = (seat: Seat) => {
@@ -441,19 +503,32 @@ export const AIRecommendation: React.FC = () => {
                 <Sparkles size={24} />
               </div>
               <h3 className="text-sm font-bold text-slate-900">
-                Awaiting Preference Evaluation
+                {emptyMessage ? 'No Available Seats Found' : 'Awaiting Preference Evaluation'}
               </h3>
               <p className="text-xs text-slate-500 max-w-sm mt-1 mb-6">
-                Select your desired seating criteria on the left and run the multi-factor heuristic engine to view the Top 3 ranked seats.
+                {emptyMessage ||
+                  'Select your desired seating criteria on the left and run the multi-factor heuristic engine to view the Top 3 ranked seats.'}
               </p>
-              <Button
-                variant="accent"
-                size="sm"
-                icon={<Zap size={14} />}
-                onClick={handleAnalyze}
-              >
-                Compute Top 3 Recommendations
-              </Button>
+              {emptyMessage && state.selectedFlight ? (
+                <Button
+                  variant="accent"
+                  size="sm"
+                  icon={<Armchair size={14} />}
+                  onClick={() => navigate(`/flights/${state.selectedFlight?.flightNumber}/seats`)}
+                >
+                  Go to Cabin &amp; Join Waiting List
+                </Button>
+              ) : (
+                <Button
+                  variant="accent"
+                  size="sm"
+                  loading={analyzing}
+                  icon={<Zap size={14} />}
+                  onClick={handleAnalyze}
+                >
+                  Compute Top 3 Recommendations
+                </Button>
+              )}
             </Card>
           )}
 

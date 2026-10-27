@@ -146,8 +146,8 @@ export function recommendTopSeats(
     };
   });
 
-  // Sort descending by calculated score
-  scored.sort((a, b) => b.score - a.score || a.seat.row - b.seat.row);
+  // Sort descending by calculated score, then by row ascending, then by column ascending (100% deterministic)
+  scored.sort((a, b) => b.score - a.score || a.seat.row - b.seat.row || a.seat.col.localeCompare(b.seat.col));
 
   return scored.slice(0, limit);
 }

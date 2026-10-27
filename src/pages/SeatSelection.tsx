@@ -17,7 +17,7 @@ import {
 import { useApp } from '../context/AppContext';
 import type { Seat, TicketRequest } from '../types';
 import { generateSeats } from '../data/seats';
-import { flightsAPI } from '../services/api';
+import { flightsAPI, reservationsAPI } from '../services/api';
 import { SeatMap } from '../components/booking/SeatMap';
 import { PageHeader } from '../components/common/PageHeader';
 import { Card } from '../components/ui/Card';
@@ -40,11 +40,21 @@ export default function SeatSelection() {
   }, [selectedFlight, navigate]);
 
   // Initialize seats layout with fallback to generateSeats()
-  const [seats, setSeats] = useState<Seat[]>(() => generateSeats());
+  const [seats, setSeats] = useState<Seat[]>(() => {
+    if (selectedFlight?.flightNumber === 'AI-999' || (selectedFlight as any)?.availableSeats === 0) {
+      return generateSeats().map((s, idx) => ({ ...s, dbId: idx + 1, status: 'occupied' as const }));
+    }
+    return generateSeats().map((s, idx) => ({ ...s, dbId: idx + 1 }));
+  });
+
   const [waitingListSuccess, setWaitingListSuccess] = useState<string | null>(null);
+  const [isJoiningWaitingList, setIsJoiningWaitingList] = useState(false);
+  const [waitingListError, setWaitingListError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedFlight) return;
+    let isMounted = true;
+
     const flightId =
       (selectedFlight as any).id ||
       (selectedFlight.flightNumber === 'AI-201'
@@ -59,19 +69,14 @@ export default function SeatSelection() {
         ? 6
         : 5);
 
-    // If it's flight AI-999 (full demo flight), mark all seats occupied
-    if (selectedFlight.flightNumber === 'AI-999' || (selectedFlight as any).availableSeats === 0) {
-      const allOccupied = generateSeats().map((s) => ({ ...s, status: 'occupied' as const }));
-      setSeats(allOccupied);
-      return;
-    }
-
     flightsAPI
       .getSeats(flightId)
       .then((res) => {
+        if (!isMounted) return;
         if (res && res.seats && res.seats.length > 0) {
           const mappedSeats: Seat[] = res.seats.map((s) => ({
             id: s.seatNumber,
+            dbId: typeof s.id === 'number' ? s.id : Number(s.id),
             row: s.row,
             col: s.col as 'A' | 'B' | 'C' | 'D',
             type: s.type,
@@ -84,8 +89,15 @@ export default function SeatSelection() {
         }
       })
       .catch(() => {
-        // Fallback: local generated layout
+        if (!isMounted) return;
+        if (selectedFlight.flightNumber === 'AI-999' || (selectedFlight as any).availableSeats === 0) {
+          setSeats(generateSeats().map((s, idx) => ({ ...s, dbId: idx + 1, status: 'occupied' as const })));
+        }
       });
+
+    return () => {
+      isMounted = false;
+    };
   }, [selectedFlight]);
 
   const [selectedSeat, setSelectedSeat] = useState<Seat | null>(() => {
@@ -123,27 +135,85 @@ export default function SeatSelection() {
     navigate('/dsa/ai');
   };
 
-  const handleJoinWaitingList = () => {
-    const reqId = generateRequestId();
+  const handleJoinWaitingList = async () => {
+    if (!selectedFlight) return;
+    setIsJoiningWaitingList(true);
+    setWaitingListError(null);
+
+    const flightId =
+      (selectedFlight as any).id ||
+      (selectedFlight.flightNumber === 'AI-201'
+        ? 1
+        : selectedFlight.flightNumber === '6E-402'
+        ? 2
+        : selectedFlight.flightNumber === 'SG-112'
+        ? 3
+        : selectedFlight.flightNumber === 'UK-305'
+        ? 4
+        : selectedFlight.flightNumber === 'AI-999'
+        ? 6
+        : 5);
+
     const passengerName = state.user?.name || 'Traveler ' + Math.floor(100 + Math.random() * 900);
-    const newRequest: TicketRequest = {
-      requestId: reqId,
-      passengerName,
-      flightNumber: selectedFlight.flightNumber,
-      requestType: 'waiting',
-      timestamp: new Date(),
-    };
+    const reqId = generateRequestId();
 
-    dispatch({ type: 'QUEUE_ENQUEUE', payload: newRequest });
-    addLog(
-      'Waiting List Intake (CO1 Queue)',
-      `Flight ${selectedFlight.flightNumber} full. Enqueued ${passengerName} to FIFO waiting list (Request ${reqId}). Position in Queue: #${state.queueSnapshot.length + 1}.`,
-      'queue'
-    );
+    try {
+      const res = await reservationsAPI.joinWaitingList({
+        flightId,
+        passengerName,
+        seatPreference: 'any',
+      });
 
-    setWaitingListSuccess(
-      `Successfully enqueued into the FIFO Waiting List! Your request ID is ${reqId}. You are at Queue Position #${state.queueSnapshot.length + 1}.`
-    );
+      const queuePos = res.waitingEntry?.queuePosition || state.queueSnapshot.length + 1;
+      const newRequest: TicketRequest = {
+        requestId: `WL-${res.waitingEntry?.id || reqId}`,
+        passengerName,
+        flightNumber: selectedFlight.flightNumber,
+        requestType: 'waiting',
+        timestamp: new Date(),
+      };
+
+      dispatch({ type: 'QUEUE_ENQUEUE', payload: newRequest });
+      addLog(
+        'Waiting List Intake (CO1 Queue)',
+        `Flight ${selectedFlight.flightNumber} full. Enqueued ${passengerName} to backend FIFO waiting list. Position in Queue: #${queuePos}.`,
+        'queue'
+      );
+
+      setWaitingListSuccess(
+        `Successfully enqueued into the FIFO Waiting List! Your request ID is WL-${res.waitingEntry?.id || reqId}. You are at Queue Position #${queuePos}.`
+      );
+    } catch (err: any) {
+      if (err?.code === 'ALREADY_WAITING') {
+        setWaitingListError('You already have an active waiting list entry for this flight.');
+      } else if (err?.code === 'FLIGHT_NOT_FULL') {
+        setWaitingListError('Flight still has seats available. You can book an available seat directly.');
+      } else if (err?.code === 'NETWORK_ERROR' || err?.statusCode === 0) {
+        // Fallback for standalone/demo offline mode
+        const newRequest: TicketRequest = {
+          requestId: reqId,
+          passengerName,
+          flightNumber: selectedFlight.flightNumber,
+          requestType: 'waiting',
+          timestamp: new Date(),
+        };
+
+        dispatch({ type: 'QUEUE_ENQUEUE', payload: newRequest });
+        addLog(
+          'Waiting List Intake (CO1 Queue - Standalone)',
+          `Flight ${selectedFlight.flightNumber} full. Enqueued ${passengerName} to local FIFO waiting list (Request ${reqId}). Position in Queue: #${state.queueSnapshot.length + 1}.`,
+          'queue'
+        );
+
+        setWaitingListSuccess(
+          `Successfully enqueued into the FIFO Waiting List (Local Session)! Your request ID is ${reqId}. You are at Queue Position #${state.queueSnapshot.length + 1}.`
+        );
+      } else {
+        setWaitingListError(err?.message || 'Unable to join waiting list. Please try again.');
+      }
+    } finally {
+      setIsJoiningWaitingList(false);
+    }
   };
 
   return (
@@ -219,11 +289,15 @@ export default function SeatSelection() {
                 No direct seats are currently open. Join the FIFO waiting queue — when an existing passenger cancels,
                 the first eligible waiting passenger is automatically allocated the released seat.
               </p>
+              {waitingListError && (
+                <p className="text-xs text-rose-700 font-semibold mt-2">{waitingListError}</p>
+              )}
             </div>
           </div>
           <Button
             variant="accent"
             size="md"
+            loading={isJoiningWaitingList}
             icon={<UserPlus size={16} />}
             onClick={handleJoinWaitingList}
             className="shrink-0"
@@ -431,6 +505,7 @@ export default function SeatSelection() {
                   <Button
                     variant="accent"
                     size="sm"
+                    loading={isJoiningWaitingList}
                     icon={<UserPlus size={14} />}
                     onClick={handleJoinWaitingList}
                   >

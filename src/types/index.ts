@@ -35,6 +35,7 @@ export type SeatType   = 'window' | 'aisle' | 'middle';
 
 export interface Seat {
   id: string;              // "12A"
+  dbId?: number;           // PostgreSQL numeric seat primary key
   row: number;
   col: string;             // "A" | "B" | "C" | "D"
   type: SeatType;
@@ -67,7 +68,8 @@ export interface WaitingPassenger {
 
 export interface Booking {
   bookingId: string;        // B1001
-  id?: string;
+  id?: string | number;
+  reservationId?: number;   // PostgreSQL numeric ID
   userId?: string | number;
   userEmail?: string;
   passenger: Passenger;
@@ -135,4 +137,39 @@ export interface SearchParams {
   to: string;
   date: string;
   passengers: number;
+}
+
+export interface JoinWaitingListPayload {
+  flightId: number | string;
+  passengerName: string;
+  seatPreference?: string;
+}
+
+export interface WaitingListResponse {
+  message: string;
+  waitingEntry: {
+    id: number;
+    flightId: number;
+    userId?: number;
+    passengerName: string;
+    seatPreference?: string;
+    status: 'waiting' | 'promoted' | 'cancelled';
+    queuePosition: number;
+    createdAt: string;
+  };
+  dsaReceipt?: {
+    co1_queue: string;
+  };
+}
+
+export interface WaitingListStatusResponse {
+  flightId: number;
+  flightNumber?: string;
+  waitingCount: number;
+  waitingList: Array<{
+    queuePosition: number;
+    passengerName: string;
+    seatPreference?: string;
+    createdAt: string;
+  }>;
 }
