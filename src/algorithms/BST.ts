@@ -1,6 +1,6 @@
 // ============================================================
-// BST.ts - Custom Binary Search Tree implementation
-// Operations: insert, search (with path tracking), inorder traversal
+// BST.ts - Custom Binary Search Tree implementation (CO4)
+// Operations: insert, search (with path tracking), inorder traversal, layout
 // Average time complexity: O(log n) | Worst case: O(n) (unbalanced)
 // ============================================================
 
@@ -22,6 +22,10 @@ export interface SearchResult {
   /** Keys visited during traversal from root */
   path: number[];
   comparisons: number;
+}
+
+export interface BSTSearchStats extends SearchResult {
+  timeMs: number;
 }
 
 export interface TreeNodeLayout {
@@ -105,6 +109,16 @@ export class BinarySearchTree {
     return { found: false, node: null, path, comparisons };
   }
 
+  /**
+   * Search with execution timing for Search Performance Lab (CO3)
+   */
+  searchWithStats(key: number): BSTSearchStats {
+    const start = performance.now();
+    const result = this.search(key);
+    const timeMs = performance.now() - start;
+    return { ...result, timeMs };
+  }
+
   /** Return all keys in sorted order via inorder traversal - O(n) */
   inorderTraversal(): number[] {
     const result: number[] = [];
@@ -137,7 +151,7 @@ export class BinarySearchTree {
 
   /**
    * Compute x,y positions for each node for SVG rendering.
-   * Uses a simple recursive algorithm: vertical by depth, horizontal by in-order rank.
+   * Uses an in-order rank placement for uniform spacing without overlap.
    */
   getLayout(svgWidth = 600, levelHeight = 70): BSTLayout {
     if (this.root === null) return { nodes: [], edges: [], width: svgWidth, height: 0 };

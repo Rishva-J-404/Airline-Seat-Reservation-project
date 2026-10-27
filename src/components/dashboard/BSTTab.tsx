@@ -1,5 +1,5 @@
 // components/dashboard/BSTTab.tsx
-// Tab component for the BST (CO3) demo section in DSADashboard
+// Tab component for the BST (CO4) demo section in DSADashboard
 
 import { Search, Plus } from 'lucide-react';
 import { Button } from '../ui/Button';

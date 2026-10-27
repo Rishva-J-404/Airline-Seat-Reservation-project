@@ -147,11 +147,11 @@ export function BSTPage() {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 font-sans">
       <PageHeader
         title="Reservation Index (Binary Search Tree)"
-        subtitle="CO3 - Efficient booking ID search and retrieval"
+        subtitle="CO4 - Dynamic Tree Structures & PNR Indexing (Contributions to CO3 Empirical Search)"
         icon={<GitBranch size={20} />}
         action={
           <Badge variant="default" size="md">
-            CO3: BST Index
+            CO4: Tree Structures
           </Badge>
         }
       />

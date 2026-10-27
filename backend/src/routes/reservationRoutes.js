@@ -1,5 +1,5 @@
 // ============================================================
-// reservationRoutes.js - Flight Reservation & Cancellation Routing
+// reservationRoutes.js - Flight Reservation, Cancellation & Waiting List
 // ============================================================
 
 import { Router } from 'express';
@@ -8,6 +8,8 @@ import {
   getReservations,
   getReservationById,
   cancelReservation,
+  joinWaitingList,
+  getWaitingListStatus,
 } from '../controllers/reservationController.js';
 import { authenticate } from '../middleware/authMiddleware.js';
 import { validateReservation } from '../middleware/validate.js';
@@ -19,7 +21,11 @@ router.use(authenticate);
 
 router.post('/', validateReservation, createReservation);
 router.get('/', getReservations);
-router.get('/:id', getReservationById);
-router.delete('/:id', cancelReservation);
+router.get('/:id(\\d+)', getReservationById);
+router.delete('/:id(\\d+)', cancelReservation);
+
+// CO1 Waiting List Queue endpoints
+router.post('/waiting-list', joinWaitingList);
+router.get('/waiting-list/:flightId', getWaitingListStatus);
 
 export default router;

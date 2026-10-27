@@ -1,7 +1,7 @@
-﻿// ============================================================
+// ============================================================
 // LinkedList.ts - Custom Singly Linked List implementation
-// Operations: insert (head/tail), delete, search, display
-// Time complexity: insertHead O(1), insertTail O(n),
+// Operations: insert (head/tail), delete, search, display, benchmark stats
+// Time complexity: insertHead O(1), insertTail O(1) with tail pointer,
 //                 delete O(n), search O(n), display O(n)
 // ============================================================
 
@@ -16,6 +16,7 @@ export class ListNode<T> {
 
 export class LinkedList<T> {
   private head: ListNode<T> | null = null;
+  private tail: ListNode<T> | null = null;
   private size: number = 0;
 
   /** Insert a new node at the head - O(1) */
@@ -23,20 +24,30 @@ export class LinkedList<T> {
     const newNode = new ListNode<T>(data);
     newNode.next = this.head;
     this.head = newNode;
+    if (this.tail === null) {
+      this.tail = newNode;
+    }
     this.size++;
   }
 
-  /** Insert a new node at the tail - O(n) */
+  /** Insert a new node at the tail - O(1) with tail pointer */
   insertAtTail(data: T): void {
     const newNode = new ListNode<T>(data);
     if (this.head === null) {
       this.head = newNode;
+      this.tail = newNode;
     } else {
-      let current = this.head;
-      while (current.next !== null) {
-        current = current.next;
+      if (this.tail !== null) {
+        this.tail.next = newNode;
+        this.tail = newNode;
+      } else {
+        let current = this.head;
+        while (current.next !== null) {
+          current = current.next;
+        }
+        current.next = newNode;
+        this.tail = newNode;
       }
-      current.next = newNode;
     }
     this.size++;
   }
@@ -48,6 +59,9 @@ export class LinkedList<T> {
     // Check head node
     if (predicate(this.head.data)) {
       this.head = this.head.next;
+      if (this.head === null) {
+        this.tail = null;
+      }
       this.size--;
       return true;
     }
@@ -56,6 +70,9 @@ export class LinkedList<T> {
     let current = this.head;
     while (current.next !== null) {
       if (predicate(current.next.data)) {
+        if (current.next === this.tail) {
+          this.tail = current;
+        }
         current.next = current.next.next;
         this.size--;
         return true;
@@ -75,6 +92,33 @@ export class LinkedList<T> {
       current = current.next;
     }
     return null;
+  }
+
+  /**
+   * Search with exact operation counting for Search Performance Lab (CO3)
+   * Tracks number of node comparisons and wall-clock execution time
+   */
+  searchWithStats(predicate: (data: T) => boolean): {
+    item: T | null;
+    comparisons: number;
+    timeMs: number;
+    found: boolean;
+  } {
+    const start = performance.now();
+    let current = this.head;
+    let comparisons = 0;
+
+    while (current !== null) {
+      comparisons++;
+      if (predicate(current.data)) {
+        const timeMs = performance.now() - start;
+        return { item: current.data, comparisons, timeMs, found: true };
+      }
+      current = current.next;
+    }
+
+    const timeMs = performance.now() - start;
+    return { item: null, comparisons, timeMs, found: false };
   }
 
   /** Return all data as an array (head→tail) for display - O(n) */
@@ -106,6 +150,7 @@ export class LinkedList<T> {
   /** Remove all nodes - O(1) */
   clear(): void {
     this.head = null;
+    this.tail = null;
     this.size = 0;
   }
 }

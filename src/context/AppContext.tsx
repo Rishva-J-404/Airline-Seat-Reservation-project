@@ -69,7 +69,7 @@ function buildInitialState(): AppState {
   if (!seeded) {
     seeded = true;
     MOCK_PASSENGERS.forEach(p => passengerList.insertAtTail(p));
-    SAMPLE_BOOKINGS.forEach(b => bookingBST.insert(bookingIdToKey(b.bookingId), b as Record<string, unknown>));
+    SAMPLE_BOOKINGS.forEach(b => bookingBST.insert(bookingIdToKey(b.bookingId), b as unknown as Record<string, unknown>));
   }
 
   const storedUser     = userStorage.get();
@@ -94,6 +94,8 @@ function buildInitialState(): AppState {
       bstNodes: bookingBST.inorderTraversal().length,
       flightsSorted: 0,
       aiRecommendations: 0,
+      searchComparisons: 0,
+      waitingListCount: 0,
     },
   };
 }
@@ -116,7 +118,7 @@ function appReducer(state: AppState, action: Action): AppState {
       const newBookings = [action.payload, ...state.bookings];
       bookingStorage.set(newBookings);
       passengerList.insertAtTail(action.payload.passenger);
-      bookingBST.insert(bookingIdToKey(action.payload.bookingId), action.payload as Record<string, unknown>);
+      bookingBST.insert(bookingIdToKey(action.payload.bookingId), action.payload as unknown as Record<string, unknown>);
       return {
         ...state,
         bookings: newBookings,

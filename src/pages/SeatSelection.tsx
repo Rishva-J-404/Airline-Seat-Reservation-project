@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Armchair,
@@ -10,9 +10,12 @@ import {
   MapPin,
   Info,
   Check,
+  AlertCircle,
+  UserPlus,
+  List,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import type { Seat } from '../types';
+import type { Seat, TicketRequest } from '../types';
 import { generateSeats } from '../data/seats';
 import { flightsAPI } from '../services/api';
 import { SeatMap } from '../components/booking/SeatMap';
@@ -20,7 +23,9 @@ import { PageHeader } from '../components/common/PageHeader';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
+import { Modal } from '../components/ui/Modal';
 import { formatCurrency } from '../utils/formatters';
+import { generateRequestId } from '../utils/idGenerator';
 
 export default function SeatSelection() {
   const navigate = useNavigate();
@@ -36,27 +41,51 @@ export default function SeatSelection() {
 
   // Initialize seats layout with fallback to generateSeats()
   const [seats, setSeats] = useState<Seat[]>(() => generateSeats());
+  const [waitingListSuccess, setWaitingListSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedFlight) return;
-    const flightId = (selectedFlight as any).id || (selectedFlight.flightNumber === 'AI-201' ? 1 : selectedFlight.flightNumber === '6E-402' ? 2 : selectedFlight.flightNumber === 'SG-112' ? 3 : selectedFlight.flightNumber === 'UK-305' ? 4 : 5);
-    flightsAPI.getSeats(flightId).then((res) => {
-      if (res && res.seats && res.seats.length > 0) {
-        const mappedSeats: Seat[] = res.seats.map((s) => ({
-          id: s.seatNumber,
-          row: s.row,
-          col: s.col as 'A' | 'B' | 'C' | 'D',
-          type: s.type,
-          hasExtraLegroom: s.hasExtraLegroom,
-          isQuietZone: s.isQuietZone,
-          isFrontRow: s.isFrontRow,
-          status: s.status as any,
-        }));
-        setSeats(mappedSeats);
-      }
-    }).catch(() => {
-      // Fallback: local generated layout
-    });
+    const flightId =
+      (selectedFlight as any).id ||
+      (selectedFlight.flightNumber === 'AI-201'
+        ? 1
+        : selectedFlight.flightNumber === '6E-402'
+        ? 2
+        : selectedFlight.flightNumber === 'SG-112'
+        ? 3
+        : selectedFlight.flightNumber === 'UK-305'
+        ? 4
+        : selectedFlight.flightNumber === 'AI-999'
+        ? 6
+        : 5);
+
+    // If it's flight AI-999 (full demo flight), mark all seats occupied
+    if (selectedFlight.flightNumber === 'AI-999' || (selectedFlight as any).availableSeats === 0) {
+      const allOccupied = generateSeats().map((s) => ({ ...s, status: 'occupied' as const }));
+      setSeats(allOccupied);
+      return;
+    }
+
+    flightsAPI
+      .getSeats(flightId)
+      .then((res) => {
+        if (res && res.seats && res.seats.length > 0) {
+          const mappedSeats: Seat[] = res.seats.map((s) => ({
+            id: s.seatNumber,
+            row: s.row,
+            col: s.col as 'A' | 'B' | 'C' | 'D',
+            type: s.type,
+            hasExtraLegroom: s.hasExtraLegroom,
+            isQuietZone: s.isQuietZone,
+            isFrontRow: s.isFrontRow,
+            status: s.status as any,
+          }));
+          setSeats(mappedSeats);
+        }
+      })
+      .catch(() => {
+        // Fallback: local generated layout
+      });
   }, [selectedFlight]);
 
   const [selectedSeat, setSelectedSeat] = useState<Seat | null>(() => {
@@ -69,7 +98,11 @@ export default function SeatSelection() {
     return null;
   }
 
+  const availableCount = seats.filter((s) => s.status === 'available').length;
+  const isFlightFull = seats.length > 0 && availableCount === 0;
+
   const handleSeatClick = (seat: Seat) => {
+    if (seat.status !== 'available') return;
     setSelectedSeat(seat);
   };
 
@@ -88,6 +121,29 @@ export default function SeatSelection() {
 
   const handleGoToAIRecommendation = () => {
     navigate('/dsa/ai');
+  };
+
+  const handleJoinWaitingList = () => {
+    const reqId = generateRequestId();
+    const passengerName = state.user?.name || 'Traveler ' + Math.floor(100 + Math.random() * 900);
+    const newRequest: TicketRequest = {
+      requestId: reqId,
+      passengerName,
+      flightNumber: selectedFlight.flightNumber,
+      requestType: 'waiting',
+      timestamp: new Date(),
+    };
+
+    dispatch({ type: 'QUEUE_ENQUEUE', payload: newRequest });
+    addLog(
+      'Waiting List Intake (CO1 Queue)',
+      `Flight ${selectedFlight.flightNumber} full. Enqueued ${passengerName} to FIFO waiting list (Request ${reqId}). Position in Queue: #${state.queueSnapshot.length + 1}.`,
+      'queue'
+    );
+
+    setWaitingListSuccess(
+      `Successfully enqueued into the FIFO Waiting List! Your request ID is ${reqId}. You are at Queue Position #${state.queueSnapshot.length + 1}.`
+    );
   };
 
   return (
@@ -149,6 +205,34 @@ export default function SeatSelection() {
         }
       />
 
+      {/* Full Flight Alert Banner (CO1 FIFO Waiting List) */}
+      {isFlightFull && (
+        <div className="mb-6 p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-sm">Flight Full — All 80 Seats Occupied</span>
+                <Badge variant="warning">CO1: FIFO Waiting Queue</Badge>
+              </div>
+              <p className="text-xs text-amber-800 mt-1">
+                No direct seats are currently open. Join the FIFO waiting queue — when an existing passenger cancels,
+                the first eligible waiting passenger is automatically allocated the released seat.
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="accent"
+            size="md"
+            icon={<UserPlus size={16} />}
+            onClick={handleJoinWaitingList}
+            className="shrink-0"
+          >
+            Join FIFO Waiting List
+          </Button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         {/* Left Column: Aircraft Fuselage Map & Zone Specs */}
         <div className="lg:col-span-7 space-y-6">
@@ -161,7 +245,7 @@ export default function SeatSelection() {
                 </h3>
               </div>
               <span className="text-xs font-mono text-slate-500">
-                Single Aisle · 4-Across Configuration
+                Single Aisle &bull; 4-Across Configuration &bull; {availableCount} Available
               </span>
             </div>
 
@@ -245,14 +329,14 @@ export default function SeatSelection() {
                 <span className="text-slate-500 uppercase font-mono tracking-wider font-semibold">Sector</span>
                 <span className="font-semibold text-slate-800 flex items-center gap-1">
                   <MapPin className="h-3 w-3 text-slate-400" />
-                  {selectedFlight.from} {'->'} {selectedFlight.to}
+                  {selectedFlight.from} &rarr; {selectedFlight.to}
                 </span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-500 uppercase font-mono tracking-wider font-semibold">Departure / Arrival</span>
                 <span className="font-mono font-semibold text-slate-800 flex items-center gap-1">
                   <Clock className="h-3 w-3 text-slate-400" />
-                  {selectedFlight.departure} {'->'} {selectedFlight.arrival} ({selectedFlight.duration})
+                  {selectedFlight.departure} &rarr; {selectedFlight.arrival} ({selectedFlight.duration})
                 </span>
               </div>
               <div className="flex justify-between items-center pt-3 border-t border-slate-200">
@@ -336,6 +420,24 @@ export default function SeatSelection() {
                   </div>
                 )}
               </div>
+            ) : isFlightFull ? (
+              <div className="p-6 text-center rounded bg-amber-50 border border-amber-200">
+                <AlertCircle className="h-6 w-6 text-amber-600 mx-auto mb-2" />
+                <p className="text-xs font-semibold text-amber-900">Flight is 100% Occupied</p>
+                <p className="text-[11px] text-amber-700 mt-1 max-w-xs mx-auto">
+                  Click below to join the FIFO Waiting Queue. You will be placed at the rear of the queue and automatically notified upon seat vacancy.
+                </p>
+                <div className="mt-4">
+                  <Button
+                    variant="accent"
+                    size="sm"
+                    icon={<UserPlus size={14} />}
+                    onClick={handleJoinWaitingList}
+                  >
+                    Join Waiting List (CO1)
+                  </Button>
+                </div>
+              </div>
             ) : (
               <div className="p-6 text-center rounded bg-slate-50 border border-dashed border-slate-300">
                 <Armchair className="h-6 w-6 text-slate-400 mx-auto mb-2" />
@@ -348,30 +450,90 @@ export default function SeatSelection() {
 
             {/* Action Controls */}
             <div className="mt-6 space-y-3 pt-4 border-t border-slate-200">
-              <Button
-                variant="secondary"
-                fullWidth
-                size="md"
-                icon={<SlidersHorizontal className="h-4 w-4" />}
-                onClick={handleGoToAIRecommendation}
-              >
-                Seat Matcher Preferences
-              </Button>
+              {!isFlightFull && (
+                <>
+                  <Button
+                    variant="secondary"
+                    fullWidth
+                    size="md"
+                    icon={<SlidersHorizontal className="h-4 w-4" />}
+                    onClick={handleGoToAIRecommendation}
+                  >
+                    Seat Matcher Preferences
+                  </Button>
 
-              <Button
-                variant="primary"
-                fullWidth
-                size="lg"
-                disabled={!selectedSeat}
-                icon={<ArrowRight className="h-4 w-4" />}
-                onClick={handleConfirmSeat}
-              >
-                Continue to Passenger Details
-              </Button>
+                  <Button
+                    variant="primary"
+                    fullWidth
+                    size="lg"
+                    disabled={!selectedSeat}
+                    icon={<ArrowRight className="h-4 w-4" />}
+                    onClick={handleConfirmSeat}
+                  >
+                    Continue to Passenger Details
+                  </Button>
+                </>
+              )}
             </div>
           </Card>
         </div>
       </div>
+
+      {/* Waiting List Confirmation Modal */}
+      <Modal
+        isOpen={Boolean(waitingListSuccess)}
+        onClose={() => setWaitingListSuccess(null)}
+        title="Enqueued to Waiting List (CO1 FIFO Queue)"
+        size="md"
+      >
+        <div className="space-y-4 pt-2 text-xs font-sans">
+          <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 flex items-start gap-2.5">
+            <Check className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+            <p>{waitingListSuccess}</p>
+          </div>
+
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1.5 text-slate-700">
+            <div className="flex justify-between font-mono">
+              <span className="text-slate-500">Flight Number:</span>
+              <span className="font-bold">{selectedFlight.flightNumber}</span>
+            </div>
+            <div className="flex justify-between font-mono">
+              <span className="text-slate-500">Queue Data Structure:</span>
+              <span className="font-bold text-aero-950">Queue (CO1 FIFO)</span>
+            </div>
+            <div className="flex justify-between font-mono">
+              <span className="text-slate-500">Auto-Promotion Trigger:</span>
+              <span className="font-bold text-emerald-700">Seat Cancellation Event</span>
+            </div>
+          </div>
+
+          <div className="flex gap-2 pt-2">
+            <Button
+              variant="primary"
+              fullWidth
+              size="md"
+              icon={<List size={16} />}
+              onClick={() => {
+                setWaitingListSuccess(null);
+                navigate('/dsa/queue');
+              }}
+            >
+              View Live Ticket Queue
+            </Button>
+            <Button
+              variant="secondary"
+              fullWidth
+              size="md"
+              onClick={() => {
+                setWaitingListSuccess(null);
+                navigate('/flights/search');
+              }}
+            >
+              Search Other Sectors
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

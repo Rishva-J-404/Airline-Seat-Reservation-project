@@ -10,7 +10,7 @@ lerna-debug.log*
 node_modules
 screenshots 
 graphify-out
-docs
+# documentation folder is tracked
 agent/skills
 .playwright-cli
 .claude/skills

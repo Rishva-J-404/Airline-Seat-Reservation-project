@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+.github
+backend
+database
+docs
+tasks
+graphify-out
+.env
+.env.local
+coverage
+*.log

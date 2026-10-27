@@ -44,7 +44,7 @@ const TABS: { id: DashboardTab; label: string; icon: React.ReactNode }[] = [
   { id: 'queue', label: 'Ticket Queue (CO1)',       icon: <List size={16} /> },
   { id: 'll',    label: 'Passenger Manifest (CO2)', icon: <Network size={16} /> },
   { id: 'sort',  label: 'Fare Sorter (CO3)',        icon: <ArrowDownUp size={16} /> },
-  { id: 'bst',   label: 'BST Index (CO3)',          icon: <GitBranch size={16} /> },
+  { id: 'bst',   label: 'BST Index (CO4)',          icon: <GitBranch size={16} /> },
   { id: 'ai',    label: 'Seat Matcher',             icon: <Cpu size={16} /> },
 ];
 
@@ -215,7 +215,7 @@ export default function DSADashboard() {
         title="Flight Operations & Algorithmic Dispatch Center"
         subtitle="Verification and live interaction console for commercial aviation core data structures"
         icon={<Activity size={20} />}
-        action={<Badge variant="default" size="md">CO1 - CO3 Standards</Badge>}
+        action={<Badge variant="default" size="md">CO1 - CO4 Standards</Badge>}
       />
 
       {/* Unified Telemetry Strip */}
@@ -366,8 +366,8 @@ export default function DSADashboard() {
           {[
             { label: 'CO1 · Queue ADT',        title: 'FIFO Request Pipeline',      desc: 'Ingests reservations and cancellations in strict chronological sequence.', left: 'Enqueue: O(1)', right: 'Dequeue: O(1)' },
             { label: 'CO2 · Linked List',      title: 'Passenger Manifest',         desc: 'Pointer-linked dynamic roster eliminates array pre-allocation penalties.', left: 'Insert: O(1)',  right: 'Search: O(n)' },
-            { label: 'CO3 · Selection Sort',   title: 'In-Place Fare Sorter',       desc: 'Sorts prices in-place with minimal memory consumption.',                 left: 'Time: O(n^2)',  right: 'Aux Space: O(1)' },
-            { label: 'CO3 · BST Index',        title: 'Hierarchical Key Index',     desc: 'Organizes booking reference keys for efficient search and in-order dump.', left: 'Search: O(log n)', right: 'In-order: O(n)' },
+            { label: 'CO3 · Search & Sort',    title: 'Selection Sort & Search Lab', desc: 'Empirical benchmarking of O(n^2) sort and O(n) vs O(log n) search.', left: 'Sort: O(n^2)', right: 'Search Lab' },
+            { label: 'CO4 · BST Tree Index',   title: 'Hierarchical Key Index',     desc: 'Dynamic binary search tree structure for booking references and traversals.', left: 'Search: O(log n)', right: 'In-order: O(n)' },
           ].map(co => (
             <Card key={co.label} className="border border-slate-200 rounded-lg p-5 bg-white">
               <span className="text-[11px] font-mono font-bold text-slate-500 uppercase tracking-wider block mb-2">{co.label}</span>

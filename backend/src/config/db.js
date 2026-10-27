@@ -12,7 +12,7 @@ let pgPool = null;
 let useRealPg = false;
 
 // In-memory relational tables for testing/development fallback when no DB is running
-const memDb = {
+export const memDb = {
   users: [
     {
       id: 1,
@@ -30,6 +30,14 @@ const memDb = {
       role: 'passenger',
       created_at: new Date(),
     },
+    {
+      id: 3,
+      name: 'Flight Operations Admin',
+      email: 'admin@flysmart.demo',
+      password_hash: '$2b$10$epRhdXJ2bBfP2tS9F0aB5egwHqf94w8w1tBqfV98yV3.1eR8E0Dje',
+      role: 'admin',
+      created_at: new Date(),
+    },
   ],
   aircraft: [
     { id: 1, model: 'Airbus A320neo', total_rows: 20, seats_per_row: 4, capacity: 80 },
@@ -42,10 +50,13 @@ const memDb = {
     { id: 3, flight_number: 'SG-112', airline: 'SpiceJet', origin: 'Coimbatore', destination: 'Mumbai', departure_time: '13:00', arrival_time: '15:20', duration: '2h 20m', base_price: 4800, aircraft_id: 2, status: 'scheduled' },
     { id: 4, flight_number: 'UK-305', airline: 'Vistara', origin: 'Chennai', destination: 'Delhi', departure_time: '06:45', arrival_time: '09:15', duration: '2h 30m', base_price: 5500, aircraft_id: 3, status: 'scheduled' },
     { id: 5, flight_number: 'AI-410', airline: 'Air India', origin: 'Mumbai', destination: 'Bangalore', departure_time: '16:30', arrival_time: '18:00', duration: '1h 30m', base_price: 6200, aircraft_id: 1, status: 'scheduled' },
+    // Flight 6: 100% full flight to showcase CO1 FIFO Waiting Queue & Auto-Promotion
+    { id: 6, flight_number: 'AI-999', airline: 'Air India', origin: 'Coimbatore', destination: 'Chennai', departure_time: '18:30', arrival_time: '20:00', duration: '1h 30m', base_price: 3500, aircraft_id: 1, status: 'scheduled' },
   ],
   seats: [],
   reservations: [],
   reservation_seats: [],
+  waiting_list: [],
 };
 
 // Auto-populate 80 seats for each flight in memDb
@@ -63,6 +74,8 @@ for (const flight of memDb.flights) {
   for (let r = 1; r <= 20; r++) {
     for (const c of COLS) {
       const sNum = `${r}${c}`;
+      // For flight 6 (AI-999), all seats are initially occupied to demonstrate full flight + waiting list
+      const isOccupied = flight.id === 6 ? true : OCCUPIED.has(sNum);
       memDb.seats.push({
         id: seatIdCounter++,
         flight_id: flight.id,
@@ -73,21 +86,27 @@ for (const flight of memDb.flights) {
         has_extra_legroom: LEGROOM_ROWS.has(r),
         is_quiet_zone: r >= 15,
         is_front_row: r <= 5,
-        status: OCCUPIED.has(sNum) ? 'occupied' : 'available',
+        status: isOccupied ? 'occupied' : 'available',
       });
     }
   }
 }
 
 // Initialize pg Pool if configured
-if (process.env.DB_PASSWORD && process.env.DB_PASSWORD.trim() !== '') {
+if (process.env.DATABASE_URL || (process.env.DB_PASSWORD && process.env.DB_PASSWORD.trim() !== '')) {
   try {
+    const config = process.env.DATABASE_URL
+      ? { connectionString: process.env.DATABASE_URL }
+      : {
+          host: ENV.DB_HOST,
+          port: ENV.DB_PORT,
+          database: ENV.DB_NAME,
+          user: ENV.DB_USER,
+          password: ENV.DB_PASSWORD,
+        };
+
     pgPool = new Pool({
-      host: ENV.DB_HOST,
-      port: ENV.DB_PORT,
-      database: ENV.DB_NAME,
-      user: ENV.DB_USER,
-      password: ENV.DB_PASSWORD,
+      ...config,
       max: 20,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
@@ -123,9 +142,15 @@ export async function query(text, params = []) {
 
 let resIdCounter = 1;
 let resSeatIdCounter = 1;
+let waitingIdCounter = 1;
 
 function executeMemQuery(sql, params) {
   const normalized = sql.replace(/\s+/g, ' ').trim();
+
+  // Transaction control statements
+  if (normalized === 'BEGIN' || normalized === 'COMMIT' || normalized === 'ROLLBACK') {
+    return { rows: [], rowCount: 0 };
+  }
 
   // 1. SELECT user by email
   if (normalized.includes('FROM users WHERE email = $1')) {
@@ -142,10 +167,9 @@ function executeMemQuery(sql, params) {
   // 3. INSERT user (Registration)
   if (normalized.startsWith('INSERT INTO users')) {
     const [name, email, password_hash, role] = params;
-    // Check unique
     if (memDb.users.some(u => u.email.toLowerCase() === email.toLowerCase())) {
       const err = new Error('Email already registered');
-      err.code = '23505'; // Unique constraint violation code
+      err.code = '23505';
       throw err;
     }
     const newUser = {
@@ -198,7 +222,7 @@ function executeMemQuery(sql, params) {
     return { rows: seat ? [{ ...seat }] : [], rowCount: seat ? 1 : 0 };
   }
 
-  // 8. UPDATE seat status to occupied
+  // 8. UPDATE seat status
   if (normalized.startsWith('UPDATE seats SET status = $1 WHERE id = $2')) {
     const [status, id] = params;
     const seat = memDb.seats.find(s => s.id === Number(id));
@@ -226,15 +250,22 @@ function executeMemQuery(sql, params) {
     return { rows: [{ ...newRes }], rowCount: 1 };
   }
 
-  // 10. INSERT reservation_seats (Checks unique_seat_reservation)
+  // 10. INSERT reservation_seats (Checks unique active reservation constraint)
   if (normalized.startsWith('INSERT INTO reservation_seats')) {
     const [reservation_id, seat_id, passenger_name, passenger_id_code] = params;
-    const existing = memDb.reservation_seats.find(rs => rs.seat_id === Number(seat_id));
-    if (existing) {
+    // Check if seat has an active confirmed reservation
+    const existingActive = memDb.reservation_seats.find(rs => {
+      if (rs.seat_id !== Number(seat_id)) return false;
+      const res = memDb.reservations.find(r => r.id === rs.reservation_id);
+      return res && res.status === 'confirmed';
+    });
+
+    if (existingActive) {
       const err = new Error('Duplicate seat booking conflict');
-      err.code = '23505'; // Unique violation
+      err.code = '23505';
       throw err;
     }
+
     const newResSeat = {
       id: resSeatIdCounter++,
       reservation_id: Number(reservation_id),
@@ -246,7 +277,14 @@ function executeMemQuery(sql, params) {
     return { rows: [{ ...newResSeat }], rowCount: 1 };
   }
 
-  // 11. SELECT reservations by user
+  // 11. SELECT reservation_seats by reservation_id
+  if (normalized.includes('FROM reservation_seats WHERE reservation_id = $1')) {
+    const resId = Number(params[0]);
+    const matches = memDb.reservation_seats.filter(rs => rs.reservation_id === resId);
+    return { rows: matches.map(m => ({ ...m })), rowCount: matches.length };
+  }
+
+  // 12. SELECT reservations by user
   if (normalized.includes('FROM reservations') && normalized.includes('WHERE user_id = $1')) {
     const userId = Number(params[0]);
     const userRes = memDb.reservations
@@ -266,7 +304,7 @@ function executeMemQuery(sql, params) {
     return { rows: userRes, rowCount: userRes.length };
   }
 
-  // 12. SELECT reservation by ID
+  // 13. SELECT reservation by ID
   if (normalized.includes('FROM reservations WHERE id = $1')) {
     const rId = Number(params[0]);
     const r = memDb.reservations.find(res => res.id === rId);
@@ -287,19 +325,57 @@ function executeMemQuery(sql, params) {
     };
   }
 
-  // 13. CANCEL reservation (UPDATE status = 'cancelled')
-  if (normalized.startsWith('UPDATE reservations SET status = $1 WHERE id = $2')) {
+  // 14. CANCEL reservation (UPDATE status = 'cancelled')
+  if (normalized.startsWith('UPDATE reservations SET status = $1 WHERE id = $2') || normalized.startsWith('UPDATE reservations SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2')) {
     const [status, id] = params;
     const r = memDb.reservations.find(res => res.id === Number(id));
     if (r) {
       r.status = status;
-      // Free seat
+      r.updated_at = new Date();
+      // Free seat in seats table
       const resSeat = memDb.reservation_seats.find(rs => rs.reservation_id === r.id);
       if (resSeat) {
         const seat = memDb.seats.find(s => s.id === resSeat.seat_id);
         if (seat) seat.status = 'available';
       }
       return { rows: [{ ...r }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }
+
+  // 15. WAITING LIST: INSERT
+  if (normalized.startsWith('INSERT INTO waiting_list')) {
+    const [flight_id, user_id, passenger_name, request_id, seat_preference, status] = params;
+    const newWL = {
+      id: waitingIdCounter++,
+      flight_id: Number(flight_id),
+      user_id: Number(user_id),
+      passenger_name,
+      request_id,
+      seat_preference: seat_preference || 'any',
+      status: status || 'waiting',
+      created_at: new Date(),
+    };
+    memDb.waiting_list.push(newWL);
+    return { rows: [{ ...newWL }], rowCount: 1 };
+  }
+
+  // 16. WAITING LIST: SELECT active waiting for flight
+  if (normalized.includes('FROM waiting_list WHERE flight_id = $1 AND status =') || normalized.includes('FROM waiting_list WHERE flight_id = $1')) {
+    const flightId = Number(params[0]);
+    const list = memDb.waiting_list
+      .filter(w => w.flight_id === flightId && w.status === 'waiting')
+      .sort((a, b) => a.created_at - b.created_at);
+    return { rows: list.map(w => ({ ...w })), rowCount: list.length };
+  }
+
+  // 17. WAITING LIST: UPDATE status (e.g. 'promoted' or 'cancelled')
+  if (normalized.startsWith('UPDATE waiting_list SET status = $1 WHERE id = $2')) {
+    const [status, id] = params;
+    const wl = memDb.waiting_list.find(w => w.id === Number(id));
+    if (wl) {
+      wl.status = status;
+      return { rows: [{ ...wl }], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };
   }

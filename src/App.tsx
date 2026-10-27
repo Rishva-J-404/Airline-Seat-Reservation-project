@@ -1,4 +1,4 @@
-﻿import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider, useApp } from './context/AppContext';
 import AppLayout from './layouts/AppLayout';
 
@@ -15,6 +15,7 @@ import MyBookings           from './pages/MyBookings';
 import LinkedListPage       from './pages/LinkedListPage';
 import BSTPage              from './pages/BSTPage';
 import SelectionSortPage    from './pages/SelectionSortPage';
+import SearchPerformanceLab from './pages/SearchPerformanceLab';
 import DSADashboard         from './pages/DSADashboard';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -42,6 +43,7 @@ function AppRoutes() {
         <Route path="/dsa/linked-list"        element={<LinkedListPage />} />
         <Route path="/dsa/bst"               element={<BSTPage />} />
         <Route path="/dsa/sort"              element={<SelectionSortPage />} />
+        <Route path="/dsa/search-lab"        element={<SearchPerformanceLab />} />
         <Route path="/dsa/dashboard"         element={<DSADashboard />} />
       </Route>
 

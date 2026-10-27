@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Cpu,
   User,
+  Gauge,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
@@ -33,10 +34,11 @@ const operationalNavItems: NavItem[] = [
 ];
 
 const technicalNavItems: NavItem[] = [
-  { label: 'Ticket Queue (FIFO)', path: '/dsa/queue', icon: <List size={17} /> },
-  { label: 'Passenger Manifest', path: '/dsa/linked-list', icon: <Network size={17} /> },
-  { label: 'Fare Selection Sort', path: '/dsa/sort', icon: <ArrowDownUp size={17} /> },
-  { label: 'BST PNR Index', path: '/dsa/bst', icon: <GitBranch size={17} /> },
+  { label: 'Ticket Queue (FIFO)', path: '/dsa/queue', icon: <List size={17} />, badge: 'CO1' },
+  { label: 'Passenger Manifest', path: '/dsa/linked-list', icon: <Network size={17} />, badge: 'CO2' },
+  { label: 'Fare Selection Sort', path: '/dsa/sort', icon: <ArrowDownUp size={17} />, badge: 'CO3' },
+  { label: 'Search Performance Lab', path: '/dsa/search-lab', icon: <Gauge size={17} />, badge: 'CO3' },
+  { label: 'BST PNR Index', path: '/dsa/bst', icon: <GitBranch size={17} />, badge: 'CO4' },
   { label: 'Seat Matcher', path: '/dsa/ai', icon: <Cpu size={17} /> },
   { label: 'Operations Center', path: '/dsa/dashboard', icon: <Activity size={17} /> },
 ];

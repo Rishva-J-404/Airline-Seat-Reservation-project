@@ -164,8 +164,8 @@ describe('Innovation: AI Seat Recommendation Engine', () => {
     const recommendation = recommendSeat(prefs, DEFAULT_SEATS);
     assert.ok(recommendation);
     assert.strictEqual(recommendation?.seat.type, 'window');
-    assert.ok(recommendation?.score > 0);
-    assert.ok(recommendation?.reasons.length > 0);
+    assert.ok((recommendation?.score ?? 0) > 0);
+    assert.ok((recommendation?.reasons.length ?? 0) > 0);
   });
 
   it('should recommend an aisle seat when aisle preference is selected', () => {

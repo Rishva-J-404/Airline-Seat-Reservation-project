@@ -4,6 +4,7 @@
 -- ============================================================
 
 -- Drop existing tables in reverse dependency order
+DROP TABLE IF EXISTS waiting_list CASCADE;
 DROP TABLE IF EXISTS reservation_seats CASCADE;
 DROP TABLE IF EXISTS reservations CASCADE;
 DROP TABLE IF EXISTS seats CASCADE;
@@ -95,15 +96,30 @@ CREATE INDEX idx_reservations_ref ON reservations(booking_reference);
 
 -- ------------------------------------------------------------
 -- 6. RESERVATION_SEATS (Mapping Seats to Reservations)
--- Prevents double-booking via UNIQUE constraint on seat_id
 -- ------------------------------------------------------------
 CREATE TABLE reservation_seats (
     id SERIAL PRIMARY KEY,
     reservation_id INT NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
     seat_id INT NOT NULL REFERENCES seats(id) ON DELETE RESTRICT,
     passenger_name VARCHAR(100) NOT NULL,
-    passenger_id_code VARCHAR(20) NOT NULL,    -- e.g. 'P101'
-    CONSTRAINT unique_seat_reservation UNIQUE (seat_id)
+    passenger_id_code VARCHAR(20) NOT NULL     -- e.g. 'P101'
 );
 
 CREATE INDEX idx_res_seats_res ON reservation_seats(reservation_id);
+CREATE INDEX idx_res_seats_seat ON reservation_seats(seat_id);
+
+-- ------------------------------------------------------------
+-- 7. WAITING_LIST (CO1: FIFO Waiting List Queue for Full Flights)
+-- ------------------------------------------------------------
+CREATE TABLE waiting_list (
+    id SERIAL PRIMARY KEY,
+    flight_id INT NOT NULL REFERENCES flights(id) ON DELETE CASCADE,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    passenger_name VARCHAR(100) NOT NULL,
+    request_id VARCHAR(30) UNIQUE NOT NULL,      -- e.g. 'WL-101'
+    seat_preference VARCHAR(30) DEFAULT 'any',
+    status VARCHAR(20) DEFAULT 'waiting' CHECK (status IN ('waiting', 'promoted', 'cancelled')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_waiting_list_flight ON waiting_list(flight_id, status, created_at);

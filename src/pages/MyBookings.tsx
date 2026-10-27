@@ -105,7 +105,14 @@ export const MyBookings: React.FC = () => {
     try {
       const numericId = parseInt(id.replace(/\D/g, ''), 10);
       if (!isNaN(numericId)) {
-        await reservationsAPI.cancel(numericId);
+        const res = await reservationsAPI.cancel(numericId);
+        if (res && (res as any).promotedPassenger) {
+          addLog(
+            'Waiting List Promotion (CO1 Queue)',
+            `Seat ${cancellingBooking.seat.id} automatically reallocated to waiting passenger ${(res as any).promotedPassenger.passengerName} via FIFO queue.`,
+            'queue'
+          );
+        }
       }
     } catch {
       // Standalone mode - client state already cancelled
