@@ -160,18 +160,26 @@ Tracks ticket purchases, fare totals, and booking reference keys.
 ---
 
 ### 2.6 `reservation_seats` Table & Concurrency Enforcement
-Maps physical seats to reservations with an integrity guarantee preventing double booking.
+Maps physical seats to reservations while preserving historical records for cancelled bookings.
 
 | Column | Type | Constraints | Description |
 | :--- | :--- | :--- | :--- |
 | `id` | `SERIAL` | `PRIMARY KEY` | Seat assignment identifier |
 | `reservation_id`| `INT` | `REFERENCES reservations(id) ON DELETE CASCADE` | Parent reservation |
-| `seat_id` | `INT` | `REFERENCES seats(id) ON DELETE RESTRICT, UNIQUE` | Physical assigned seat |
+| `seat_id` | `INT` | `REFERENCES seats(id) ON DELETE RESTRICT` | Physical assigned seat |
 | `passenger_name`| `VARCHAR(100)`| `NOT NULL` | Traveling passenger name |
 | `passenger_id_code`| `VARCHAR(20)`| `NOT NULL` | System manifest code (e.g. `P101`) |
 
-> **Concurrency Safety Invariant**:
-> The `UNIQUE(seat_id)` constraint on `reservation_seats` guarantees at the database engine level that no two concurrent transactions can successfully commit a booking for the same seat on the same flight. Conflicting concurrent transactions raise Postgres Error `23505` (`unique_violation`), which the application catches and surfaces as HTTP `409 Conflict`.
+> **Concurrency Safety & Historical Audit Architecture**:
+> To preserve full historical audit logs of cancelled reservations (`status = 'cancelled'`) and permit previously released seats to be booked again by new passengers, `reservation_seats` does not enforce an unconditional `UNIQUE(seat_id)` constraint across historical rows.
+> 
+> Instead, authoritative double-booking prevention is enforced via single-client PostgreSQL transactions (`withTransaction`):
+> 1. A dedicated connection is acquired from the pool (`pool.connect()`) and initiates `BEGIN`.
+> 2. The seat row is locked using `SELECT * FROM seats WHERE id = $1 AND flight_id = $2 FOR UPDATE`.
+> 3. Availability is verified while holding the row lock (`seat.status === 'available'`).
+> 4. An atomic state transition is executed: `UPDATE seats SET status = 'occupied' WHERE id = $1 AND status = 'available' RETURNING *`.
+> 5. If another concurrent transaction acquired the seat first, zero rows are updated and the transaction is aborted with HTTP 409 Conflict (`SEAT_UNAVAILABLE`).
+> 6. On cancellation, the seat is transitioned back (`UPDATE seats SET status = 'available' WHERE id = $1`), enabling seamless re-booking while preserving the historical reservation record.
 
 ---
 

@@ -67,7 +67,7 @@ graph TD
         FlightsTbl[("flights")]
         SeatsTbl[("seats (80/flight)")]
         ResTbl[("reservations")]
-        ResSeatsTbl[("reservation_seats (UNIQUE constraint)")]
+        ResSeatsTbl[("reservation_seats (FK mapping)")]
         WaitListTbl[("waiting_list (FIFO order)")]
     end
 

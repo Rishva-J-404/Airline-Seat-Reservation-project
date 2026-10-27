@@ -328,7 +328,7 @@ Retrieves details for a single reservation. Enforces ownership authorization (us
 ---
 
 ### 3.4 Cancel Reservation
-Cancels an existing flight reservation, unlinks the passenger record from the manifest linked list, and releases the assigned seat back to `available` status.
+Cancels an existing flight reservation within a single-client transaction, unlinks the passenger record from the manifest linked list, releases the assigned seat back to `available` status, and atomically promotes the oldest eligible waiting passenger if the flight has a waiting list.
 
 - **Method**: `DELETE`
 - **Path**: `/api/reservations/:id`
@@ -340,12 +340,84 @@ Cancels an existing flight reservation, unlinks the passenger record from the ma
   {
     "message": "Reservation B1005 successfully cancelled. Seat has been released.",
     "reservationId": 1,
-    "status": "cancelled"
+    "status": "cancelled",
+    "seatReleased": true,
+    "promotedPassenger": {
+      "requestId": "WL-101",
+      "passengerName": "Anand Kumar",
+      "promotedBookingReference": "B1006",
+      "allocatedSeat": "1A"
+    }
   }
   ```
 - **400 Bad Request**: Reservation is already cancelled.
 - **403 Forbidden**: User does not have permission to cancel this reservation.
 - **404 Not Found**: Reservation ID not found.
+
+---
+
+### 3.5 Join Waiting List (CO1 FIFO Waiting Queue)
+Places a passenger into the persistent waiting list for a flight that is 100% booked.
+
+- **Method**: `POST`
+- **Path**: `/api/reservations/waiting-list`
+- **Auth**: Required (`Bearer <token>`)
+
+#### Request Body:
+```json
+{
+  "flightId": 6,
+  "passengerName": "Anand Kumar",
+  "seatPreference": "window"
+}
+```
+
+#### Responses:
+- **201 Created**:
+  ```json
+  {
+    "message": "Successfully joined waiting list for Flight AI-999.",
+    "waitingRecord": {
+      "requestId": "WL-101",
+      "flightNumber": "AI-999",
+      "passengerName": "Anand Kumar",
+      "queuePosition": 1,
+      "status": "waiting",
+      "timestamp": "2026-10-27T19:40:00.000Z"
+    },
+    "dsaReceipt": {
+      "co1_queue": "Enqueued WL-101 into FIFO Waiting Queue (O(1)). Current Queue Depth: 1"
+    }
+  }
+  ```
+- **400 Bad Request**: Missing `flightId` or `passengerName`.
+- **404 Not Found**: Flight ID not found.
+
+---
+
+### 3.6 Get Waiting List Status
+Retrieves all pending waiting-list passengers for a specific flight schedule directly from persistent database records in deterministic FIFO order (`created_at ASC, id ASC`).
+
+- **Method**: `GET`
+- **Path**: `/api/reservations/waiting-list/:flightId`
+- **Auth**: Required (`Bearer <token>`)
+
+#### Response (200 OK):
+```json
+{
+  "flightId": 6,
+  "queueDepth": 1,
+  "waitingPassengers": [
+    {
+      "queuePosition": 1,
+      "requestId": "WL-101",
+      "passengerName": "Anand Kumar",
+      "seatPreference": "window",
+      "joinedAt": "2026-10-27T19:40:00.000Z"
+    }
+  ]
+}
+```
 
 ---
 

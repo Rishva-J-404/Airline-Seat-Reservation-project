@@ -1,6 +1,7 @@
 // ============================================================
 // db.js - PostgreSQL Relational Database Client with Fallback
-// Provides query(), getClient(), and transaction execution
+// Provides single-client transaction execution (withTransaction),
+// parameterized query(), and an in-memory transactional mock fallback.
 // ============================================================
 
 import pkg from 'pg';
@@ -20,7 +21,7 @@ export const memDb = {
       email: 'neavis.rishva@flysmart.demo',
       password_hash: '$2b$10$epRhdXJ2bBfP2tS9F0aB5egwHqf94w8w1tBqfV98yV3.1eR8E0Dje', // password123
       role: 'passenger',
-      created_at: new Date(),
+      created_at: new Date('2026-01-01T00:00:00Z'),
     },
     {
       id: 2,
@@ -28,7 +29,7 @@ export const memDb = {
       email: 'priya.sharma@flysmart.demo',
       password_hash: '$2b$10$epRhdXJ2bBfP2tS9F0aB5egwHqf94w8w1tBqfV98yV3.1eR8E0Dje',
       role: 'passenger',
-      created_at: new Date(),
+      created_at: new Date('2026-01-01T00:00:00Z'),
     },
     {
       id: 3,
@@ -36,7 +37,7 @@ export const memDb = {
       email: 'admin@flysmart.demo',
       password_hash: '$2b$10$epRhdXJ2bBfP2tS9F0aB5egwHqf94w8w1tBqfV98yV3.1eR8E0Dje',
       role: 'admin',
-      created_at: new Date(),
+      created_at: new Date('2026-01-01T00:00:00Z'),
     },
   ],
   aircraft: [
@@ -59,7 +60,6 @@ export const memDb = {
   waiting_list: [],
 };
 
-// Auto-populate 80 seats for each flight in memDb
 const COLS = ['A', 'B', 'C', 'D'];
 const LEGROOM_ROWS = new Set([1, 10, 20]);
 const OCCUPIED = new Set([
@@ -69,27 +69,48 @@ const OCCUPIED = new Set([
   '15A','16B','17C','17D','18A','19B','20C',
 ]);
 
-let seatIdCounter = 1;
-for (const flight of memDb.flights) {
-  for (let r = 1; r <= 20; r++) {
-    for (const c of COLS) {
-      const sNum = `${r}${c}`;
-      // For flight 6 (AI-999), all seats are initially occupied to demonstrate full flight + waiting list
-      const isOccupied = flight.id === 6 ? true : OCCUPIED.has(sNum);
-      memDb.seats.push({
-        id: seatIdCounter++,
-        flight_id: flight.id,
-        seat_number: sNum,
-        row_number: r,
-        col_letter: c,
-        seat_type: c === 'A' || c === 'D' ? 'window' : 'aisle',
-        has_extra_legroom: LEGROOM_ROWS.has(r),
-        is_quiet_zone: r >= 15,
-        is_front_row: r <= 5,
-        status: isOccupied ? 'occupied' : 'available',
-      });
+export function populateInitialSeats() {
+  memDb.seats = [];
+  let seatIdCounter = 1;
+  for (const flight of memDb.flights) {
+    for (let r = 1; r <= 20; r++) {
+      for (const c of COLS) {
+        const sNum = `${r}${c}`;
+        const isOccupied = flight.id === 6 ? true : OCCUPIED.has(sNum);
+        memDb.seats.push({
+          id: seatIdCounter++,
+          flight_id: flight.id,
+          seat_number: sNum,
+          row_number: r,
+          col_letter: c,
+          seat_type: c === 'A' || c === 'D' ? 'window' : 'aisle',
+          has_extra_legroom: LEGROOM_ROWS.has(r),
+          is_quiet_zone: r >= 15,
+          is_front_row: r <= 5,
+          status: isOccupied ? 'occupied' : 'available',
+        });
+      }
     }
   }
+}
+
+populateInitialSeats();
+
+let resIdCounter = 1;
+let resSeatIdCounter = 1;
+let waitingIdCounter = 1;
+
+/**
+ * Resets in-memory database to initial seeded state (useful for regression test isolation)
+ */
+export function resetMemDb() {
+  populateInitialSeats();
+  memDb.reservations = [];
+  memDb.reservation_seats = [];
+  memDb.waiting_list = [];
+  resIdCounter = 1;
+  resSeatIdCounter = 1;
+  waitingIdCounter = 1;
 }
 
 // Initialize pg Pool if configured
@@ -117,8 +138,100 @@ if (process.env.DATABASE_URL || (process.env.DB_PASSWORD && process.env.DB_PASSW
   }
 }
 
+export function getPool() {
+  return pgPool;
+}
+
+export function isUsingRealPg() {
+  return useRealPg && Boolean(pgPool);
+}
+
 /**
- * Universal query function: executes against real PostgreSQL or in-memory DB
+ * Executes a callback within a managed transaction.
+ *
+ * For real PostgreSQL:
+ * - Obtains a SINGLE dedicated client from pgPool via pool.connect()
+ * - Executes BEGIN
+ * - Executes callback(client)
+ * - Executes COMMIT if callback succeeds
+ * - Executes ROLLBACK if callback fails (handling rollback error without hiding original error)
+ * - Releases client back to pool in finally
+ *
+ * For in-memory store:
+ * - Simulates atomic rollback via table snapshots
+ * - Note: In-memory simulation does not provide hardware/OS level multithreaded ACID guarantees of PostgreSQL
+ */
+export async function withTransaction(callback) {
+  if (useRealPg && pgPool) {
+    let client;
+    try {
+      client = await pgPool.connect();
+    } catch (err) {
+      if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
+        console.warn('[DB] PostgreSQL unreachable, executing via local store transaction');
+        return await executeMemTransaction(callback);
+      }
+      throw err;
+    }
+
+    try {
+      await client.query('BEGIN');
+      const result = await callback(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (txnError) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('[DB] PostgreSQL ROLLBACK error:', rollbackError);
+      }
+      throw txnError;
+    } finally {
+      client.release();
+    }
+  }
+
+  return await executeMemTransaction(callback);
+}
+
+/**
+ * In-memory transaction simulator: creates a deep snapshot and reverts on error.
+ */
+async function executeMemTransaction(callback) {
+  const snapshot = {
+    seats: memDb.seats.map(s => ({ ...s })),
+    reservations: memDb.reservations.map(r => ({ ...r })),
+    reservation_seats: memDb.reservation_seats.map(rs => ({ ...rs })),
+    waiting_list: memDb.waiting_list.map(w => ({ ...w })),
+    users: memDb.users.map(u => ({ ...u })),
+    resIdCounter,
+    resSeatIdCounter,
+    waitingIdCounter,
+  };
+
+  const mockClient = {
+    query: async (text, params = []) => executeMemQuery(text, params),
+  };
+
+  try {
+    const result = await callback(mockClient);
+    return result;
+  } catch (err) {
+    // Revert state on transaction failure
+    memDb.seats = snapshot.seats;
+    memDb.reservations = snapshot.reservations;
+    memDb.reservation_seats = snapshot.reservation_seats;
+    memDb.waiting_list = snapshot.waiting_list;
+    memDb.users = snapshot.users;
+    resIdCounter = snapshot.resIdCounter;
+    resSeatIdCounter = snapshot.resSeatIdCounter;
+    waitingIdCounter = snapshot.waitingIdCounter;
+    throw err;
+  }
+}
+
+/**
+ * Universal query function: executes standalone queries against real PostgreSQL or in-memory DB
  * @param {string} text SQL statement with $1, $2 placeholders
  * @param {Array} params Parameter values
  */
@@ -127,7 +240,6 @@ export async function query(text, params = []) {
     try {
       return await pgPool.query(text, params);
     } catch (err) {
-      // Fallback on connection error
       if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
         console.warn('[DB] PostgreSQL unreachable, executing via local store');
       } else {
@@ -136,16 +248,19 @@ export async function query(text, params = []) {
     }
   }
 
-  // Memory SQL Simulator for standard parameterized queries
   return executeMemQuery(text, params);
 }
 
-let resIdCounter = 1;
-let resSeatIdCounter = 1;
-let waitingIdCounter = 1;
-
+/**
+ * In-memory SQL execution engine for standalone and transactional operations.
+ */
 function executeMemQuery(sql, params) {
-  const normalized = sql.replace(/\s+/g, ' ').trim();
+  let normalized = sql.replace(/\s+/g, ' ').trim();
+
+  // Strip locking clauses for simulator matching
+  normalized = normalized
+    .replace(/\s+FOR\s+UPDATE\s+SKIP\s+LOCKED/i, '')
+    .replace(/\s+FOR\s+UPDATE/i, '');
 
   // Transaction control statements
   if (normalized === 'BEGIN' || normalized === 'COMMIT' || normalized === 'ROLLBACK') {
@@ -216,13 +331,31 @@ function executeMemQuery(sql, params) {
     return { rows: seats.map(s => ({ ...s })), rowCount: seats.length };
   }
 
-  // 7. SELECT seat by ID and check status
+  // 7. SELECT seat by ID and check status / flight_id
+  if (normalized.includes('FROM seats WHERE id = $1 AND flight_id = $2')) {
+    const seatId = Number(params[0]);
+    const flightId = Number(params[1]);
+    const seat = memDb.seats.find(s => s.id === seatId && s.flight_id === flightId);
+    return { rows: seat ? [{ ...seat }] : [], rowCount: seat ? 1 : 0 };
+  }
+
   if (normalized.includes('FROM seats WHERE id = $1')) {
     const seat = memDb.seats.find(s => s.id === Number(params[0]));
     return { rows: seat ? [{ ...seat }] : [], rowCount: seat ? 1 : 0 };
   }
 
-  // 8. UPDATE seat status
+  // 8. UPDATE seat status with conditional check (Concurrency safe)
+  if (normalized.startsWith('UPDATE seats SET status = $1 WHERE id = $2 AND status = $3')) {
+    const [status, id, expectedStatus] = params;
+    const seat = memDb.seats.find(s => s.id === Number(id));
+    if (seat && seat.status === expectedStatus) {
+      seat.status = status;
+      return { rows: [{ ...seat }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }
+
+  // UPDATE seat status unconditional
   if (normalized.startsWith('UPDATE seats SET status = $1 WHERE id = $2')) {
     const [status, id] = params;
     const seat = memDb.seats.find(s => s.id === Number(id));
@@ -250,22 +383,9 @@ function executeMemQuery(sql, params) {
     return { rows: [{ ...newRes }], rowCount: 1 };
   }
 
-  // 10. INSERT reservation_seats (Checks unique active reservation constraint)
+  // 10. INSERT reservation_seats
   if (normalized.startsWith('INSERT INTO reservation_seats')) {
     const [reservation_id, seat_id, passenger_name, passenger_id_code] = params;
-    // Check if seat has an active confirmed reservation
-    const existingActive = memDb.reservation_seats.find(rs => {
-      if (rs.seat_id !== Number(seat_id)) return false;
-      const res = memDb.reservations.find(r => r.id === rs.reservation_id);
-      return res && res.status === 'confirmed';
-    });
-
-    if (existingActive) {
-      const err = new Error('Duplicate seat booking conflict');
-      err.code = '23505';
-      throw err;
-    }
-
     const newResSeat = {
       id: resSeatIdCounter++,
       reservation_id: Number(reservation_id),
@@ -325,19 +445,26 @@ function executeMemQuery(sql, params) {
     };
   }
 
-  // 14. CANCEL reservation (UPDATE status = 'cancelled')
-  if (normalized.startsWith('UPDATE reservations SET status = $1 WHERE id = $2') || normalized.startsWith('UPDATE reservations SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2')) {
+  // 14. CANCEL reservation with conditional check
+  if (normalized.startsWith('UPDATE reservations SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND status = $3') ||
+      normalized.startsWith('UPDATE reservations SET status = $1 WHERE id = $2 AND status = $3')) {
+    const [status, id, expectedStatus] = params;
+    const r = memDb.reservations.find(res => res.id === Number(id));
+    if (r && r.status === expectedStatus) {
+      r.status = status;
+      r.updated_at = new Date();
+      return { rows: [{ ...r }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  }
+
+  if (normalized.startsWith('UPDATE reservations SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2') ||
+      normalized.startsWith('UPDATE reservations SET status = $1 WHERE id = $2')) {
     const [status, id] = params;
     const r = memDb.reservations.find(res => res.id === Number(id));
     if (r) {
       r.status = status;
       r.updated_at = new Date();
-      // Free seat in seats table
-      const resSeat = memDb.reservation_seats.find(rs => rs.reservation_id === r.id);
-      if (resSeat) {
-        const seat = memDb.seats.find(s => s.id === resSeat.seat_id);
-        if (seat) seat.status = 'available';
-      }
       return { rows: [{ ...r }], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };
@@ -360,16 +487,29 @@ function executeMemQuery(sql, params) {
     return { rows: [{ ...newWL }], rowCount: 1 };
   }
 
-  // 16. WAITING LIST: SELECT active waiting for flight
-  if (normalized.includes('FROM waiting_list WHERE flight_id = $1 AND status =') || normalized.includes('FROM waiting_list WHERE flight_id = $1')) {
+  // 16. WAITING LIST: COUNT
+  if (normalized.includes('SELECT COUNT(*)') && normalized.includes('FROM waiting_list WHERE flight_id = $1 AND status = $2')) {
     const flightId = Number(params[0]);
-    const list = memDb.waiting_list
-      .filter(w => w.flight_id === flightId && w.status === 'waiting')
-      .sort((a, b) => a.created_at - b.created_at);
+    const statusVal = params[1] || 'waiting';
+    const count = memDb.waiting_list.filter(w => w.flight_id === flightId && w.status === statusVal).length;
+    return { rows: [{ count: String(count) }], rowCount: 1 };
+  }
+
+  // 17. WAITING LIST: SELECT active waiting for flight (FIFO order by created_at ASC, id ASC)
+  if (normalized.includes('FROM waiting_list WHERE flight_id = $1 AND status = $2') || normalized.includes('FROM waiting_list WHERE flight_id = $1')) {
+    const flightId = Number(params[0]);
+    const statusVal = params[1] || 'waiting';
+    let list = memDb.waiting_list
+      .filter(w => w.flight_id === flightId && (!statusVal || w.status === statusVal))
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at) || a.id - b.id);
+
+    if (normalized.includes('LIMIT 1')) {
+      list = list.slice(0, 1);
+    }
     return { rows: list.map(w => ({ ...w })), rowCount: list.length };
   }
 
-  // 17. WAITING LIST: UPDATE status (e.g. 'promoted' or 'cancelled')
+  // 18. WAITING LIST: UPDATE status
   if (normalized.startsWith('UPDATE waiting_list SET status = $1 WHERE id = $2')) {
     const [status, id] = params;
     const wl = memDb.waiting_list.find(w => w.id === Number(id));
@@ -383,4 +523,10 @@ function executeMemQuery(sql, params) {
   return { rows: [], rowCount: 0 };
 }
 
-export const db = { query };
+export const db = {
+  query,
+  withTransaction,
+  getPool,
+  isUsingRealPg,
+  resetMemDb,
+};

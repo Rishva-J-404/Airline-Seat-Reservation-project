@@ -37,7 +37,7 @@ graph TD
         FlightsTbl[("flights")]
         SeatsTbl[("seats (80/flight)")]
         ResTbl[("reservations")]
-        ResSeatsTbl[("reservation_seats (UNIQUE constraint)")]
+        ResSeatsTbl[("reservation_seats (FK mapping)")]
         WaitListTbl[("waiting_list (FIFO order)")]
     end
 
@@ -170,5 +170,5 @@ sequenceDiagram
 ## 5. Security & Concurrency Controls
 - **Bcrypt Password Hashing**: Passwords stored with 10 salt rounds.
 - **JWT Authorization**: 24-hour stateless signed tokens verified via middleware.
-- **Relational Integrity**: `UNIQUE(seat_id)` on `reservation_seats` enforces hardware-level double-booking prevention.
+- **Concurrency & Double-Booking Prevention**: Single-client PostgreSQL transactions (`withTransaction`) utilize pessimistic row locking (`SELECT ... FOR UPDATE` on `seats`) and atomic conditional state transitions (`UPDATE seats ... WHERE status = 'available'`) to prevent double-booking while preserving historical cancelled reservations.
 - **Rate Limiting**: In-memory rate limiting shields sensitive auth and booking endpoints.

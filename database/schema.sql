@@ -96,6 +96,10 @@ CREATE INDEX idx_reservations_ref ON reservations(booking_reference);
 
 -- ------------------------------------------------------------
 -- 6. RESERVATION_SEATS (Mapping Seats to Reservations)
+-- Note: Does NOT enforce unconditional UNIQUE(seat_id) so cancelled
+-- reservations retain historical audit integrity while releasing seats
+-- for subsequent bookings. Active concurrency is enforced via
+-- single-client transaction row locks (SELECT ... FOR UPDATE on seats).
 -- ------------------------------------------------------------
 CREATE TABLE reservation_seats (
     id SERIAL PRIMARY KEY,
