@@ -45,6 +45,7 @@ DECLARE
     f RECORD;
     r INT;
     c CHAR(1);
+    cols CHAR(1)[] := ARRAY['A', 'B', 'C', 'D'];
     s_id VARCHAR(10);
     s_type VARCHAR(20);
     has_legroom BOOLEAN;
@@ -54,18 +55,16 @@ DECLARE
 BEGIN
     FOR f IN SELECT id FROM flights LOOP
         FOR r IN 1..20 LOOP
-            FOR c IN ('A', 'B', 'C', 'D') LOOP
+            FOREACH c IN ARRAY cols LOOP
                 s_id := r || c;
                 s_type := CASE WHEN c IN ('A', 'D') THEN 'window' ELSE 'aisle' END;
                 has_legroom := r IN (1, 10, 20);
                 is_quiet := r >= 15;
                 is_front := r <= 5;
 
-                -- For Flight 6 (AI-999), 100% of seats are occupied to showcase Waiting Queue
                 IF f.id = 6 THEN
                     is_occupied := TRUE;
                 ELSE
-                    -- Standard pre-occupied seats for realism
                     is_occupied := s_id IN (
                         '1B','1C','2A','2D','3B','4A','4C','5B','5D',
                         '6A','6B','7C','7D','8A','9B','9C','10D',
@@ -74,16 +73,14 @@ BEGIN
                     );
                 END IF;
 
-                INSERT INTO seats (flight_id, seat_number, row_number, col_letter, seat_type, has_extra_legroom, is_quiet_zone, is_front_row, status)
+                INSERT INTO seats (
+                    flight_id, seat_number, row_number, col_letter,
+                    seat_type, has_extra_legroom, is_quiet_zone,
+                    is_front_row, status
+                )
                 VALUES (
-                    f.id,
-                    s_id,
-                    r,
-                    c,
-                    s_type,
-                    has_legroom,
-                    is_quiet,
-                    is_front,
+                    f.id, s_id, r, c, s_type,
+                    has_legroom, is_quiet, is_front,
                     CASE WHEN is_occupied THEN 'occupied' ELSE 'available' END
                 );
             END LOOP;

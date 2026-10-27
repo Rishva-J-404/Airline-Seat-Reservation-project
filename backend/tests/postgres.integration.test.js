@@ -19,7 +19,7 @@ import pkg from 'pg';
 const { Pool } = pkg;
 import request from 'supertest';
 import { app } from '../src/app.js';
-import { configurePgPool, assertSafeTestDatabase } from '../src/config/db.js';
+import { configurePgPool, assertSafeTestDatabase, withTransaction } from '../src/config/db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -149,16 +149,33 @@ describe('PostgreSQL Staging Integration Tests (Real DB Path)', () => {
       return;
     }
 
-    // Book seat 3 (Row 1 Col C)
+    // Query PostgreSQL to dynamically select an available seat on a non-full flight (excluding AI-999)
+    const seatRes = await testPool.query(`
+      SELECT s.id, s.flight_id, s.seat_number
+      FROM seats s
+      JOIN flights f ON s.flight_id = f.id
+      WHERE s.status = 'available' AND f.flight_number != 'AI-999' AND s.id != 4
+      ORDER BY s.id ASC
+      LIMIT 1
+    `);
+    assert.ok(seatRes.rows.length > 0, 'Must find an available seat on a non-full flight');
+    const targetSeat = seatRes.rows[0];
+
+    // Book the available seat using actual primary key, flight ID, and seat number
     const bookRes = await request(app)
       .post('/api/reservations')
       .set('Authorization', `Bearer ${authTokenUserA}`)
-      .send({ flightId: 1, seatId: 3, passengerName: 'Lifecycle Traveler' });
+      .send({
+        flightId: targetSeat.flight_id,
+        seatId: targetSeat.id,
+        passengerName: 'Lifecycle Traveler',
+      });
     assert.strictEqual(bookRes.status, 201);
+    assert.strictEqual(bookRes.body.reservation.seatNumber, targetSeat.seat_number);
     const resId = bookRes.body.reservation.id;
 
     // Direct PostgreSQL inspection: seat must be occupied
-    const seatCheck1 = await testPool.query('SELECT status FROM seats WHERE id = 3');
+    const seatCheck1 = await testPool.query('SELECT status FROM seats WHERE id = $1', [targetSeat.id]);
     assert.strictEqual(seatCheck1.rows[0].status, 'occupied');
 
     // Cancel via API
@@ -172,7 +189,7 @@ describe('PostgreSQL Staging Integration Tests (Real DB Path)', () => {
     const resCheck = await testPool.query('SELECT status FROM reservations WHERE id = $1', [resId]);
     assert.strictEqual(resCheck.rows[0].status, 'cancelled');
 
-    const seatCheck2 = await testPool.query('SELECT status FROM seats WHERE id = 3');
+    const seatCheck2 = await testPool.query('SELECT status FROM seats WHERE id = $1', [targetSeat.id]);
     assert.strictEqual(seatCheck2.rows[0].status, 'available');
   });
 
@@ -221,21 +238,73 @@ describe('PostgreSQL Staging Integration Tests (Real DB Path)', () => {
       return;
     }
 
-    // Verify seat 5 is available
-    const initCheck = await testPool.query('SELECT status FROM seats WHERE id = 5');
-    assert.strictEqual(initCheck.rows[0].status, 'available');
+    // 1. Select an actually available seat from PostgreSQL before starting the test
+    const seatRes = await testPool.query(`
+      SELECT s.id, s.flight_id, s.seat_number, s.status
+      FROM seats s
+      JOIN flights f ON s.flight_id = f.id
+      WHERE s.status = 'available' AND f.flight_number != 'AI-999'
+      ORDER BY s.id DESC
+      LIMIT 1
+    `);
+    assert.ok(seatRes.rows.length > 0, 'Must find an available seat');
+    const targetSeat = seatRes.rows[0];
 
-    // Attempt booking with non-existent flightId to trigger error after row locking
-    const failRes = await request(app)
-      .post('/api/reservations')
-      .set('Authorization', `Bearer ${authTokenUserA}`)
-      .send({ flightId: 99999, seatId: 5, passengerName: 'Rollback Subject' });
+    // 2. Record its original status and the relevant reservation count
+    const originalStatus = targetSeat.status;
+    assert.strictEqual(originalStatus, 'available');
 
-    assert.strictEqual(failRes.status, 404);
+    const initResCount = await testPool.query('SELECT COUNT(*) FROM reservations');
+    const initialReservationCount = parseInt(initResCount.rows[0].count, 10);
 
-    // Direct PostgreSQL inspection: seat 5 MUST still be available, no changes committed
-    const afterCheck = await testPool.query('SELECT status FROM seats WHERE id = 5');
-    assert.strictEqual(afterCheck.rows[0].status, 'available');
+    const initMappingCount = await testPool.query(
+      'SELECT COUNT(*) FROM reservation_seats WHERE seat_id = $1',
+      [targetSeat.id]
+    );
+    const initialMappingCountVal = parseInt(initMappingCount.rows[0].count, 10);
+
+    // 3. Trigger the intended failure after the transaction has begun and before commit
+    let transactionError = null;
+    try {
+      await withTransaction(async (client) => {
+        // Step A: Update seat status to occupied
+        await client.query("UPDATE seats SET status = 'occupied' WHERE id = $1", [targetSeat.id]);
+
+        // Step B: Insert partial reservation
+        const newRes = await client.query(
+          'INSERT INTO reservations (booking_reference, user_id, flight_id, total_fare, status) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+          ['B_SIM_FAIL', 1, targetSeat.flight_id, 2500, 'confirmed']
+        );
+
+        // Step C: Insert partial reservation_seats mapping
+        await client.query(
+          'INSERT INTO reservation_seats (reservation_id, seat_id, passenger_name, passenger_id_code) VALUES ($1, $2, $3, $4)',
+          [newRes.rows[0].id, targetSeat.id, 'Rollback Subject', 'P999']
+        );
+
+        // Explicitly trigger failure condition before commit
+        throw new Error('SIMULATED_TRANSACTION_FAILURE');
+      });
+    } catch (err) {
+      transactionError = err;
+    }
+
+    // 4. Confirm that the failure is caused by the intended test condition, not invalid test data
+    assert.ok(transactionError, 'Transaction must throw an error');
+    assert.strictEqual(transactionError.message, 'SIMULATED_TRANSACTION_FAILURE');
+
+    // 5. Verify that the seat remains available, no partial reservation is persisted, and no reservation-seat mapping is left behind
+    const seatAfter = await testPool.query('SELECT status FROM seats WHERE id = $1', [targetSeat.id]);
+    assert.strictEqual(seatAfter.rows[0].status, 'available');
+
+    const resCountAfter = await testPool.query('SELECT COUNT(*) FROM reservations');
+    assert.strictEqual(parseInt(resCountAfter.rows[0].count, 10), initialReservationCount);
+
+    const mappingCountAfter = await testPool.query(
+      'SELECT COUNT(*) FROM reservation_seats WHERE seat_id = $1',
+      [targetSeat.id]
+    );
+    assert.strictEqual(parseInt(mappingCountAfter.rows[0].count, 10), initialMappingCountVal);
   });
 
   // ------------------------------------------------------------
