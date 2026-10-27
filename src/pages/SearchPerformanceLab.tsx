@@ -43,7 +43,7 @@ interface BenchmarkRecord {
 const DATASET_SIZES: DatasetSize[] = [10, 50, 100, 500, 1000, 5000, 10000];
 
 export default function SearchPerformanceLab() {
-  const { addLog, dispatch } = useApp();
+  const { addLog } = useApp();
 
   const [selectedSize, setSelectedSize] = useState<DatasetSize>(1000);
   const [scenario, setScenario] = useState<SearchScenario>('average');
@@ -140,14 +140,9 @@ export default function SearchPerformanceLab() {
       setHistory((prev) => [record, ...prev.slice(0, 9)]);
       setIsRunning(false);
 
-      dispatch({ type: 'ADD_LOG', payload: {
-        operation: 'Search Lab Benchmark',
-        detail: `Dataset: ${selectedSize} | LL: ${llStats.comparisons} comps vs BST: ${bstStats.comparisons} comps (${reduction}% reduction)`,
-        type: 'bst',
-      }});
       addLog(
         'Search Benchmark (CO3)',
-        `Evaluated search for B${targetKey} across ${selectedSize} records: LL took ${llStats.comparisons} comparisons, BST took ${bstStats.comparisons} comparisons`,
+        `Evaluated search for B${targetKey} across ${selectedSize} records: LL took ${llStats.comparisons} comparisons, BST took ${bstStats.comparisons} comparisons (${reduction}% reduction)`,
         'bst'
       );
     }, 50);

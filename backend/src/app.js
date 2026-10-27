@@ -28,9 +28,22 @@ app.use((req, res, next) => {
 // Apply API-wide rate limiting
 app.use('/api', apiRateLimiter);
 
-// CORS Configuration
+// CORS Configuration (Consistent origin resolution for web and containers)
+const allowedOrigins = [
+  ENV.CLIENT_ORIGIN,
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost',
+  'http://localhost:80',
+].filter(Boolean);
+
 app.use(cors({
-  origin: [ENV.CLIENT_ORIGIN, 'http://localhost:5173', 'http://127.0.0.1:5173'],
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`CORS policy violation: origin ${origin} is not allowed.`));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],

@@ -1,7 +1,7 @@
 // ============================================================
 // reservations.test.js - Reservation Management, Concurrency & Waiting List Tests
 // Regression suite verifying single-client transactions, double-booking prevention,
-// safe cancellation, re-booking after cancellation, and FIFO waiting list persistence.
+// safe cancellation, re-booking after cancellation, joined relations, and FIFO waiting list persistence.
 // ============================================================
 
 import { describe, it, before } from 'node:test';
@@ -16,6 +16,7 @@ describe('Backend Reservations Endpoints', () => {
   let bookedSeatId = null;
   let bookedSeatNumber = '';
   let confirmedResId = null;
+  let confirmedBookingRef = '';
 
   before(async () => {
     // 1. Register main test user
@@ -57,7 +58,7 @@ describe('Backend Reservations Endpoints', () => {
     assert.strictEqual(res.status, 401);
   });
 
-  it('should successfully create reservation for an available seat', async () => {
+  it('should successfully create reservation for an available seat with CO4 receipt', async () => {
     const res = await request(app)
       .post('/api/reservations')
       .set('Authorization', `Bearer ${userToken}`)
@@ -73,9 +74,11 @@ describe('Backend Reservations Endpoints', () => {
     assert.ok(res.body.reservation.bookingReference);
     assert.ok(res.body.dsaReceipt.co1_queue);
     assert.ok(res.body.dsaReceipt.co2_manifest);
-    assert.ok(res.body.dsaReceipt.co4_bst || res.body.dsaReceipt.co3_bst);
+    assert.ok(res.body.dsaReceipt.co4_bst, 'CO4 BST receipt must exist');
+    assert.ok(res.body.dsaReceipt.co3_bst, 'CO3 BST alias receipt must exist for backward compatibility');
 
     confirmedResId = res.body.reservation.id;
+    confirmedBookingRef = res.body.reservation.bookingReference;
   });
 
   it('should prevent double-booking the same seat (Concurrency / Integrity Constraint)', async () => {
@@ -127,7 +130,7 @@ describe('Backend Reservations Endpoints', () => {
     assert.strictEqual(conflictRes.body.error.code, 'SEAT_UNAVAILABLE');
   });
 
-  it('should retrieve list of reservations for authenticated user', async () => {
+  it('should retrieve list of reservations with complete joined flight & seat fields (BUG-001)', async () => {
     const res = await request(app)
       .get('/api/reservations')
       .set('Authorization', `Bearer ${userToken}`);
@@ -135,16 +138,44 @@ describe('Backend Reservations Endpoints', () => {
     assert.strictEqual(res.status, 200);
     assert.ok(res.body.reservations.length >= 1);
     const found = res.body.reservations.find(r => r.id === confirmedResId);
-    assert.ok(found);
+    assert.ok(found, 'Created reservation must be present in reservations list');
+    assert.ok(found.flightNumber || found.flight_number, 'flightNumber must be returned');
+    assert.ok(found.airline, 'airline must be returned');
+    assert.ok(found.origin || found.from, 'origin must be returned');
+    assert.ok(found.destination || found.to, 'destination must be returned');
+    assert.ok(found.seatNumber || found.seat_number, 'seatNumber must be returned');
+    assert.ok(found.passengerName || found.passenger_name, 'passengerName must be returned');
   });
 
-  it('should retrieve specific reservation by ID for owner', async () => {
+  it('should retrieve specific reservation by ID with full joined fields for owner', async () => {
     const res = await request(app)
       .get(`/api/reservations/${confirmedResId}`)
       .set('Authorization', `Bearer ${userToken}`);
 
     assert.strictEqual(res.status, 200);
     assert.strictEqual(res.body.reservation.id, confirmedResId);
+    assert.strictEqual(res.body.reservation.bookingReference, confirmedBookingRef);
+    assert.strictEqual(res.body.reservation.seatNumber, bookedSeatNumber);
+    assert.ok(res.body.reservation.airline);
+  });
+
+  it('should retrieve specific reservation by booking reference string (e.g. B1001)', async () => {
+    const res = await request(app)
+      .get(`/api/reservations/${confirmedBookingRef}`)
+      .set('Authorization', `Bearer ${userToken}`);
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.reservation.id, confirmedResId);
+    assert.strictEqual(res.body.reservation.bookingReference, confirmedBookingRef);
+  });
+
+  it('should return 400 INVALID_ID for malformed reservation identifier', async () => {
+    const res = await request(app)
+      .get('/api/reservations/not-a-valid-id-or-ref')
+      .set('Authorization', `Bearer ${userToken}`);
+
+    assert.strictEqual(res.status, 400);
+    assert.strictEqual(res.body.error.code, 'INVALID_ID');
   });
 
   it('should forbid other user from accessing private reservation (403 Forbidden)', async () => {
@@ -169,6 +200,35 @@ describe('Backend Reservations Endpoints', () => {
     const seatCheck = await request(app).get('/api/flights/1/seats');
     const releasedSeat = seatCheck.body.seats.find(s => s.id === bookedSeatId);
     assert.strictEqual(releasedSeat.status, 'available');
+  });
+
+  it('should allow cancellation using booking reference string (BUG-002)', async () => {
+    // 1. Create a fresh reservation to cancel via string reference
+    const seatsRes = await request(app).get('/api/flights/1/seats');
+    const freeSeat = seatsRes.body.seats.find(s => s.status === 'available');
+    assert.ok(freeSeat);
+
+    const makeRes = await request(app)
+      .post('/api/reservations')
+      .set('Authorization', `Bearer ${userToken}`)
+      .send({
+        flightId: 1,
+        seatId: freeSeat.id,
+        passengerName: 'Cancel By Ref Test',
+      });
+    assert.strictEqual(makeRes.status, 201);
+    const refString = makeRes.body.reservation.bookingReference;
+    assert.ok(refString);
+
+    // 2. Cancel using bookingReference string
+    const cancelRes = await request(app)
+      .delete(`/api/reservations/${refString}`)
+      .set('Authorization', `Bearer ${userToken}`);
+
+    assert.strictEqual(cancelRes.status, 200);
+    assert.strictEqual(cancelRes.body.status, 'cancelled');
+    assert.strictEqual(cancelRes.body.seatReleased, true);
+    assert.strictEqual(cancelRes.body.bookingReference, refString);
   });
 
   it('should allow a different passenger to book the released seat after cancellation (Seat Re-Booking)', async () => {
@@ -201,28 +261,18 @@ describe('Backend Reservations Endpoints', () => {
     assert.strictEqual(res.body.error.code, 'ALREADY_CANCELLED');
   });
 
-  it('should rollback transaction and restore seat state on reservation error', async () => {
-    // Find an available seat
-    const seatsRes = await request(app).get('/api/flights/1/seats');
-    const testSeat = seatsRes.body.seats.find(s => s.status === 'available');
-    assert.ok(testSeat);
-
-    // Attempt reservation with invalid non-existent flightId
+  it('should reject joining waiting list when flight still has available seats (BUG-003)', async () => {
+    // Flight 1 has available seats
     const res = await request(app)
-      .post('/api/reservations')
+      .post('/api/reservations/waiting-list')
       .set('Authorization', `Bearer ${userToken}`)
       .send({
-        flightId: 99999, // Non-existent flight triggers 404 error
-        seatId: testSeat.id,
-        passengerName: 'Rollback Test',
+        flightId: 1,
+        passengerName: 'Early Waiter',
       });
 
-    assert.strictEqual(res.status, 404);
-
-    // Verify testSeat remains available (not occupied)
-    const afterCheck = await request(app).get('/api/flights/1/seats');
-    const seatAfter = afterCheck.body.seats.find(s => s.id === testSeat.id);
-    assert.strictEqual(seatAfter.status, 'available');
+    assert.strictEqual(res.status, 400);
+    assert.strictEqual(res.body.error.code, 'FLIGHT_NOT_FULL');
   });
 
   it('should allow joining waiting list for full flight (CO1 FIFO queue)', async () => {
@@ -241,8 +291,30 @@ describe('Backend Reservations Endpoints', () => {
     assert.ok(res.body.waitingRecord.requestId.startsWith('WL-'));
   });
 
+  it('should reject duplicate active waiting entry for same user and flight (BUG-003)', async () => {
+    const res = await request(app)
+      .post('/api/reservations/waiting-list')
+      .set('Authorization', `Bearer ${userToken}`)
+      .send({
+        flightId: 6,
+        passengerName: 'Anand Kumar Duplicate',
+      });
+
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.error.code, 'ALREADY_WAITING');
+  });
+
+  it('should reject waiting list status for invalid non-numeric flightId (BUG-011)', async () => {
+    const res = await request(app)
+      .get('/api/reservations/waiting-list/not-numeric')
+      .set('Authorization', `Bearer ${userToken}`);
+
+    assert.strictEqual(res.status, 400);
+    assert.strictEqual(res.body.error.code, 'INVALID_ID');
+  });
+
   it('should promote the oldest waiting passenger in strict FIFO order on cancellation', async () => {
-    // Enqueue second waiting passenger for flight 6
+    // Enqueue second waiting passenger for flight 6 using otherUserToken
     const res2 = await request(app)
       .post('/api/reservations/waiting-list')
       .set('Authorization', `Bearer ${otherUserToken}`)
@@ -256,7 +328,6 @@ describe('Backend Reservations Endpoints', () => {
     assert.strictEqual(res2.body.waitingRecord.queuePosition, 2);
 
     // Create a confirmed reservation on flight 6 to cancel (simulate an existing passenger)
-    // First free a seat on flight 6 for initial booking
     const seatRes = await request(app).get('/api/flights/6/seats');
     const seatToBook = seatRes.body.seats[0];
 

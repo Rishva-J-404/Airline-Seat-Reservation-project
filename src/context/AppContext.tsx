@@ -1,5 +1,4 @@
-import { createContext, useContext, useReducer } from 'react';
-import type { ReactNode } from 'react';
+import { createContext, useContext } from 'react';
 import type {
   User, Booking, TicketRequest, Passenger, Flight, Seat,
   SeatPreferences, AlgorithmLogEntry, DsaStats
@@ -12,9 +11,9 @@ import { generateLogId } from '../utils/idGenerator';
 import { bookingStorage, logStorage, userStorage } from '../services/storageService';
 
 // Module-level DSA singletons - live outside React, mutated by reducer
-const ticketQueue  = new Queue<TicketRequest>();
-const passengerList = new LinkedList<Passenger>();
-const bookingBST   = new BinarySearchTree();
+export const ticketQueue  = new Queue<TicketRequest>();
+export const passengerList = new LinkedList<Passenger>();
+export const bookingBST   = new BinarySearchTree();
 
 // Guard so seed only runs once even in dev double-invocation
 let seeded = false;
@@ -22,7 +21,7 @@ let seeded = false;
 // ---------------------------------------------------------------
 // State
 // ---------------------------------------------------------------
-interface AppState {
+export interface AppState {
   user: User | null;
   bookings: Booking[];
   queueSnapshot: TicketRequest[];
@@ -40,7 +39,7 @@ interface AppState {
 // ---------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------
-type Action =
+export type Action =
   | { type: 'LOGIN';          payload: User }
   | { type: 'LOGOUT' }
   | { type: 'ADD_BOOKING';    payload: Booking }
@@ -65,7 +64,7 @@ type Action =
 // ---------------------------------------------------------------
 // Initial state builder
 // ---------------------------------------------------------------
-function buildInitialState(): AppState {
+export function buildInitialState(): AppState {
   if (!seeded) {
     seeded = true;
     MOCK_PASSENGERS.forEach(p => passengerList.insertAtTail(p));
@@ -103,7 +102,7 @@ function buildInitialState(): AppState {
 // ---------------------------------------------------------------
 // Reducer (pure - reads singletons' new state after mutation)
 // ---------------------------------------------------------------
-function appReducer(state: AppState, action: Action): AppState {
+export function appReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
 
     case 'LOGIN':
@@ -234,7 +233,7 @@ function appReducer(state: AppState, action: Action): AppState {
 // ---------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------
-interface AppContextValue {
+export interface AppContextValue {
   state: AppState;
   dispatch: React.Dispatch<Action>;
   addLog: (operation: string, detail: string, type: AlgorithmLogEntry['type']) => void;
@@ -243,21 +242,7 @@ interface AppContextValue {
   bst: BinarySearchTree;
 }
 
-const AppContext = createContext<AppContextValue | undefined>(undefined);
-
-export function AppProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(appReducer, undefined, buildInitialState);
-
-  const addLog = (operation: string, detail: string, type: AlgorithmLogEntry['type']) => {
-    dispatch({ type: 'ADD_LOG', payload: { operation, detail, type } });
-  };
-
-  return (
-    <AppContext.Provider value={{ state, dispatch, addLog, ticketQueue, passengerList, bst: bookingBST }}>
-      {children}
-    </AppContext.Provider>
-  );
-}
+export const AppContext = createContext<AppContextValue | undefined>(undefined);
 
 export function useApp() {
   const ctx = useContext(AppContext);

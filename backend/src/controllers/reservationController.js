@@ -164,6 +164,7 @@ export async function createReservation(req, res, next) {
       message: 'Flight seat reservation successfully confirmed.',
       reservation: {
         id: reservation.id,
+        reservationId: reservation.id,
         bookingReference: reservation.booking_reference,
         flightNumber: flight.flight_number,
         airline: flight.airline,
@@ -171,6 +172,7 @@ export async function createReservation(req, res, next) {
         destination: flight.destination,
         departureTime: flight.departure_time,
         arrivalTime: flight.arrival_time,
+        seatId: Number(seatId),
         seatNumber: seat.seat_number,
         passengerName,
         passengerIdCode,
@@ -182,6 +184,7 @@ export async function createReservation(req, res, next) {
         co1_queue: 'Processed via FIFO Request Intake Queue (O(1))',
         co2_manifest: `Appended ${passengerName} to manifest linked list tail (O(1))`,
         co4_bst: `Indexed booking key ${numericKey} in Binary Search Tree (O(log n))`,
+        co3_bst: `Indexed booking key ${numericKey} in Binary Search Tree (O(log n))`,
       },
     });
   } catch (err) {
@@ -199,23 +202,56 @@ export async function createReservation(req, res, next) {
 
 /**
  * Get all flight reservations for the authenticated user
+ * Queries relational database using explicit JOINs across reservations, flights, reservation_seats, and seats.
  */
 export async function getReservations(req, res, next) {
   try {
     const userId = req.user.id;
-    const result = await db.query('SELECT * FROM reservations WHERE user_id = $1 ORDER BY created_at DESC', [userId]);
+    const queryText = `
+      SELECT 
+        r.id,
+        r.booking_reference,
+        r.user_id,
+        r.flight_id,
+        r.total_fare,
+        r.status,
+        r.created_at,
+        r.updated_at,
+        f.flight_number,
+        f.airline,
+        f.origin,
+        f.destination,
+        f.departure_time,
+        f.arrival_time,
+        f.duration,
+        s.id AS seat_id,
+        s.seat_number,
+        rs.passenger_name,
+        rs.passenger_id_code
+      FROM reservations r
+      JOIN flights f ON r.flight_id = f.id
+      LEFT JOIN reservation_seats rs ON rs.reservation_id = r.id
+      LEFT JOIN seats s ON rs.seat_id = s.id
+      WHERE r.user_id = $1
+      ORDER BY r.created_at DESC
+    `;
+    const result = await db.query(queryText, [userId]);
 
     const formatted = result.rows.map(r => ({
       id: r.id,
+      reservationId: r.id,
       bookingReference: r.booking_reference,
-      flightNumber: r.flight?.flight_number,
-      airline: r.flight?.airline,
-      origin: r.flight?.origin,
-      destination: r.flight?.destination,
-      departure: r.flight?.departure_time,
-      arrival: r.flight?.arrival_time,
+      flightNumber: r.flight_number || r.flight?.flight_number,
+      airline: r.airline || r.flight?.airline,
+      origin: r.origin || r.flight?.origin,
+      destination: r.destination || r.flight?.destination,
+      departure: r.departure_time || r.flight?.departure_time,
+      arrival: r.arrival_time || r.flight?.arrival_time,
+      duration: r.duration || r.flight?.duration,
+      seatId: r.seat_id,
       seatNumber: r.seat_number,
       passengerName: r.passenger_name,
+      passengerIdCode: r.passenger_id_code,
       totalFare: Number(r.total_fare),
       status: r.status,
       createdAt: r.created_at,
@@ -231,18 +267,67 @@ export async function getReservations(req, res, next) {
 }
 
 /**
- * Get specific flight reservation by ID with authorization check
+ * Get specific flight reservation by ID or booking reference with authorization check
  */
 export async function getReservationById(req, res, next) {
   try {
-    const reservationId = Number(req.params.id);
-    const result = await db.query('SELECT * FROM reservations WHERE id = $1', [reservationId]);
+    const rawParam = req.params.id;
+    if (!rawParam || typeof rawParam !== 'string') {
+      return res.status(400).json({
+        error: { code: 'INVALID_ID', message: 'Reservation ID or booking reference is required.' },
+      });
+    }
+
+    const trimmed = rawParam.trim();
+    const isNumeric = /^\d+$/.test(trimmed);
+    const isRef = /^B\d+$/i.test(trimmed);
+
+    if (!isNumeric && !isRef) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_ID',
+          message: `Invalid reservation identifier "${rawParam}". Must be a numeric ID or booking reference (e.g. B1001).`,
+        },
+      });
+    }
+
+    const numId = isNumeric ? parseInt(trimmed, 10) : -1;
+    const refStr = trimmed.toUpperCase();
+
+    const queryText = `
+      SELECT 
+        r.id,
+        r.booking_reference,
+        r.user_id,
+        r.flight_id,
+        r.total_fare,
+        r.status,
+        r.created_at,
+        r.updated_at,
+        f.flight_number,
+        f.airline,
+        f.origin,
+        f.destination,
+        f.departure_time,
+        f.arrival_time,
+        f.duration,
+        s.id AS seat_id,
+        s.seat_number,
+        rs.passenger_name,
+        rs.passenger_id_code
+      FROM reservations r
+      JOIN flights f ON r.flight_id = f.id
+      LEFT JOIN reservation_seats rs ON rs.reservation_id = r.id
+      LEFT JOIN seats s ON rs.seat_id = s.id
+      WHERE (r.id = $1 OR UPPER(r.booking_reference) = $2)
+    `;
+    const result = await db.query(queryText, [numId, refStr]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({
         error: {
           code: 'RESERVATION_NOT_FOUND',
-          message: `Reservation with ID ${reservationId} not found.`,
+          message: `Reservation "${rawParam}" not found.`,
         },
       });
     }
@@ -260,15 +345,19 @@ export async function getReservationById(req, res, next) {
     res.status(200).json({
       reservation: {
         id: r.id,
+        reservationId: r.id,
         bookingReference: r.booking_reference,
-        flightNumber: r.flight?.flight_number,
-        airline: r.flight?.airline,
-        origin: r.flight?.origin,
-        destination: r.flight?.destination,
-        departure: r.flight?.departure_time,
-        arrival: r.flight?.arrival_time,
+        flightNumber: r.flight_number || r.flight?.flight_number,
+        airline: r.airline || r.flight?.airline,
+        origin: r.origin || r.flight?.origin,
+        destination: r.destination || r.flight?.destination,
+        departure: r.departure_time || r.flight?.departure_time,
+        arrival: r.arrival_time || r.flight?.arrival_time,
+        duration: r.duration || r.flight?.duration,
+        seatId: r.seat_id,
         seatNumber: r.seat_number,
         passengerName: r.passenger_name,
+        passengerIdCode: r.passenger_id_code,
         totalFare: Number(r.total_fare),
         status: r.status,
         createdAt: r.created_at,
@@ -280,18 +369,43 @@ export async function getReservationById(req, res, next) {
 }
 
 /**
- * Cancel a flight reservation, release seat, and atomically promote the oldest eligible waiting passenger (CO1 FIFO Queue)
+ * Cancel a flight reservation, release seat, and atomically promote the oldest eligible waiting passenger (CO1 FIFO Queue).
+ * Supports cancellation by either numeric database reservation ID or booking reference string.
  */
 export async function cancelReservation(req, res, next) {
   try {
-    const reservationId = Number(req.params.id);
+    const rawParam = req.params.id;
+    if (!rawParam || typeof rawParam !== 'string') {
+      return res.status(400).json({
+        error: { code: 'INVALID_ID', message: 'Reservation ID or booking reference is required.' },
+      });
+    }
+
+    const trimmed = rawParam.trim();
+    const isNumeric = /^\d+$/.test(trimmed);
+    const isRef = /^B\d+$/i.test(trimmed);
+
+    if (!isNumeric && !isRef) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_ID',
+          message: `Invalid reservation identifier "${rawParam}". Must be a numeric ID or booking reference (e.g. B1001).`,
+        },
+      });
+    }
+
+    const numId = isNumeric ? parseInt(trimmed, 10) : -1;
+    const refStr = trimmed.toUpperCase();
 
     const cancelResult = await db.withTransaction(async (client) => {
-      // 1. Lock reservation row using SELECT ... FOR UPDATE
-      const check = await client.query('SELECT * FROM reservations WHERE id = $1 FOR UPDATE', [reservationId]);
+      // 1. Lock reservation row using SELECT ... FOR UPDATE (supports ID or booking reference)
+      const check = await client.query(
+        'SELECT * FROM reservations WHERE (id = $1 OR UPPER(booking_reference) = $2) FOR UPDATE',
+        [numId, refStr]
+      );
 
       if (check.rows.length === 0) {
-        const err = new Error(`Reservation with ID ${reservationId} not found.`);
+        const err = new Error(`Reservation "${rawParam}" not found.`);
         err.statusCode = 404;
         err.code = 'RESERVATION_NOT_FOUND';
         throw err;
@@ -314,13 +428,13 @@ export async function cancelReservation(req, res, next) {
       }
 
       // 2. Identify and lock associated seat from reservation_seats
-      const resSeatResult = await client.query('SELECT * FROM reservation_seats WHERE reservation_id = $1', [reservationId]);
+      const resSeatResult = await client.query('SELECT * FROM reservation_seats WHERE reservation_id = $1', [reservation.id]);
       const seatId = resSeatResult.rows.length > 0 ? resSeatResult.rows[0].seat_id : null;
 
       // 3. Mark reservation cancelled only when it is still confirmed (Prevents simultaneous cancellation race)
       const updateRes = await client.query(
         'UPDATE reservations SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND status = $3 RETURNING *',
-        ['cancelled', reservationId, 'confirmed']
+        ['cancelled', reservation.id, 'confirmed']
       );
       if (updateRes.rows.length === 0) {
         const err = new Error('This flight reservation has already been cancelled.');
@@ -430,7 +544,8 @@ export async function cancelReservation(req, res, next) {
 
     return res.status(200).json({
       message: `Reservation ${reservation.booking_reference} successfully cancelled. Seat has been released.`,
-      reservationId,
+      reservationId: reservation.id,
+      bookingReference: reservation.booking_reference,
       status: 'cancelled',
       seatReleased: true,
       seatId,
@@ -454,56 +569,88 @@ export async function cancelReservation(req, res, next) {
 
 /**
  * Join the flight FIFO Waiting Queue when a flight is fully booked (CO1)
- * Persists in database as source of truth and enqueues in memory for live visualizer
+ * Validates flight exists, verifies flight is full, prevents duplicate active entries,
+ * persists in database as source of truth, and enqueues in memory for live visualizer.
  */
 export async function joinWaitingList(req, res, next) {
   try {
     const userId = req.user.id;
     const { flightId, passengerName, seatPreference } = req.body;
 
-    if (!flightId || !passengerName) {
+    const parsedFlightId = parseInt(flightId, 10);
+    if (isNaN(parsedFlightId) || parsedFlightId <= 0 || !passengerName || typeof passengerName !== 'string' || !passengerName.trim()) {
       return res.status(400).json({
         error: {
           code: 'VALIDATION_ERROR',
-          message: 'Both flightId and passengerName are required to join the waiting list.',
+          message: 'Valid numeric flightId and non-empty passengerName are required to join the waiting list.',
         },
       });
     }
 
-    const flightRes = await db.query('SELECT * FROM flights WHERE id = $1', [flightId]);
+    // 1. Verify flight exists
+    const flightRes = await db.query('SELECT * FROM flights WHERE id = $1', [parsedFlightId]);
     if (flightRes.rows.length === 0) {
       return res.status(404).json({
         error: {
           code: 'FLIGHT_NOT_FOUND',
-          message: `Flight schedule with ID ${flightId} does not exist.`,
+          message: `Flight schedule with ID ${parsedFlightId} does not exist.`,
+        },
+      });
+    }
+
+    // 2. Verify flight is fully booked (waiting list is only available when flight is full)
+    const seatsCheck = await db.query(
+      'SELECT COUNT(*) as available_count FROM seats WHERE flight_id = $1 AND status = $2',
+      [parsedFlightId, 'available']
+    );
+    const availableCount = Number(seatsCheck.rows[0]?.available_count || seatsCheck.rows[0]?.count || 0);
+    if (availableCount > 0) {
+      return res.status(400).json({
+        error: {
+          code: 'FLIGHT_NOT_FULL',
+          message: `Flight ${flightRes.rows[0].flight_number} still has ${availableCount} available seat(s). You can only join the waiting list when a flight is fully booked.`,
+        },
+      });
+    }
+
+    // 3. Prevent duplicate active waiting entries for same user and flight
+    const duplicateCheck = await db.query(
+      'SELECT id FROM waiting_list WHERE flight_id = $1 AND user_id = $2 AND status = $3',
+      [parsedFlightId, userId, 'waiting']
+    );
+    if (duplicateCheck.rows.length > 0) {
+      return res.status(409).json({
+        error: {
+          code: 'ALREADY_WAITING',
+          message: `You already have an active waiting list entry for Flight ${flightRes.rows[0].flight_number}.`,
         },
       });
     }
 
     const requestId = `WL-${waitingCounter++}`;
 
-    // 1. Persist in database (Source of truth)
+    // 4. Persist in database (Authoritative source of truth)
     const dbResult = await db.query(
       'INSERT INTO waiting_list (flight_id, user_id, passenger_name, request_id, seat_preference, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [flightId, userId, passengerName, requestId, seatPreference || 'any', 'waiting']
+      [parsedFlightId, userId, passengerName.trim(), requestId, seatPreference || 'any', 'waiting']
     );
     const dbRow = dbResult.rows[0];
 
-    // 2. Determine FIFO queue position based on persistent records
+    // 5. Determine FIFO queue position based on persistent records
     const countResult = await db.query(
       'SELECT COUNT(*) as count FROM waiting_list WHERE flight_id = $1 AND status = $2',
-      [flightId, 'waiting']
+      [parsedFlightId, 'waiting']
     );
     const position = Number(countResult.rows[0]?.count || 1);
 
-    // 3. Mirror into server-side in-memory FIFO waiting queue for live visualizer
-    const waitingQueue = getWaitingQueue(flightId);
+    // 6. Mirror into server-side in-memory FIFO waiting queue for live visualizer
+    const waitingQueue = getWaitingQueue(parsedFlightId);
     waitingQueue.enqueue({
       dbId: dbRow?.id,
       requestId,
       userId,
-      flightId: Number(flightId),
-      passengerName,
+      flightId: parsedFlightId,
+      passengerName: passengerName.trim(),
       seatPreference: seatPreference || 'any',
       joinedAt: new Date(),
     });
@@ -514,7 +661,7 @@ export async function joinWaitingList(req, res, next) {
         id: dbRow?.id,
         requestId,
         flightNumber: flightRes.rows[0].flight_number,
-        passengerName,
+        passengerName: passengerName.trim(),
         queuePosition: position,
         status: 'waiting',
         timestamp: new Date().toISOString(),
@@ -533,7 +680,27 @@ export async function joinWaitingList(req, res, next) {
  */
 export async function getWaitingListStatus(req, res, next) {
   try {
-    const flightId = Number(req.params.flightId);
+    const rawId = req.params.flightId;
+    const flightId = parseInt(rawId, 10);
+    if (isNaN(flightId) || flightId <= 0 || String(flightId) !== String(rawId).trim()) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_ID',
+          message: `Invalid flight ID "${rawId}". Flight ID must be a positive integer.`,
+        },
+      });
+    }
+
+    // Verify flight exists
+    const flightCheck = await db.query('SELECT flight_number FROM flights WHERE id = $1', [flightId]);
+    if (flightCheck.rows.length === 0) {
+      return res.status(404).json({
+        error: {
+          code: 'FLIGHT_NOT_FOUND',
+          message: `Flight schedule with ID ${flightId} does not exist.`,
+        },
+      });
+    }
 
     // Query database as the authoritative source of truth for pending passengers
     const result = await db.query(
@@ -559,6 +726,7 @@ export async function getWaitingListStatus(req, res, next) {
 
     res.status(200).json({
       flightId,
+      flightNumber: flightCheck.rows[0].flight_number,
       queueDepth: result.rows.length,
       waitingPassengers: result.rows.map((row, idx) => ({
         queuePosition: idx + 1,

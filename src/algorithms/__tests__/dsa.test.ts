@@ -91,7 +91,7 @@ describe('CO2: Singly Linked List Data Structure', () => {
   });
 });
 
-describe('CO3: Binary Search Tree (BST)', () => {
+describe('CO4: Binary Search Tree (BST)', () => {
   it('should insert keys and maintain BST invariant', () => {
     const bst = new BinarySearchTree();
     [1003, 1001, 1005, 1002, 1004].forEach((k) => bst.insert(k));
@@ -194,5 +194,14 @@ describe('Innovation: AI Seat Recommendation Engine', () => {
     const recommendation = recommendSeat(prefs, DEFAULT_SEATS);
     assert.ok(recommendation);
     assert.strictEqual(recommendation?.seat.hasExtraLegroom, true);
+  });
+
+  it('should deterministically rank column A ahead of column D when both window seats share identical score', () => {
+    const testSeats = [
+      { id: '1D', row: 1, col: 'D', type: 'window' as const, hasExtraLegroom: false, isQuietZone: false, isFrontRow: true, status: 'available' as const },
+      { id: '1A', row: 1, col: 'A', type: 'window' as const, hasExtraLegroom: false, isQuietZone: false, isFrontRow: true, status: 'available' as const },
+    ];
+    const top = recommendSeat({ window: true, aisle: false, extraLegroom: false, frontRow: false, quietArea: false }, testSeats);
+    assert.strictEqual(top?.seat.id, '1A');
   });
 });

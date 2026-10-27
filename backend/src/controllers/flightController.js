@@ -1,6 +1,7 @@
 // ============================================================
 // flightController.js - Flight Query & Cabin Layout Handlers
-// Integrates server-side SelectionSort for price ordering
+// Integrates server-side SelectionSort for price ordering and
+// dynamic seat availability calculations from database state.
 // ============================================================
 
 import { db } from '../config/db.js';
@@ -10,13 +11,22 @@ export async function getFlights(req, res, next) {
   try {
     const { from, to, sortBy } = req.query;
 
-    let queryText = 'SELECT * FROM flights';
+    let queryText = `
+      SELECT 
+        f.*,
+        COALESCE(COUNT(s.id) FILTER (WHERE s.status = 'available'), 0)::int AS available_seats,
+        COALESCE(COUNT(s.id), 0)::int AS total_seats
+      FROM flights f
+      LEFT JOIN seats s ON s.flight_id = f.id
+    `;
     let params = [];
 
     if (from && to) {
-      queryText += ' WHERE LOWER(origin) = LOWER($1) AND LOWER(destination) = LOWER($2)';
+      queryText += ' WHERE LOWER(f.origin) = LOWER($1) AND LOWER(f.destination) = LOWER($2)';
       params = [from, to];
     }
+
+    queryText += ' GROUP BY f.id ORDER BY f.id ASC';
 
     const result = await db.query(queryText, params);
     let flights = result.rows;
@@ -37,21 +47,25 @@ export async function getFlights(req, res, next) {
 
     res.status(200).json({
       count: flights.length,
-      flights: flights.map(f => ({
-        id: f.id,
-        flightNumber: f.flight_number,
-        airline: f.airline,
-        from: f.origin,
-        to: f.destination,
-        departure: f.departure_time,
-        arrival: f.arrival_time,
-        duration: f.duration,
-        price: Number(f.base_price),
-        availableSeats: f.availableSeats ?? 80,
-        totalSeats: f.totalSeats ?? 80,
-        aircraft: f.aircraft_id === 1 ? 'Airbus A320neo' : 'Boeing 737-800',
-        status: f.status,
-      })),
+      flights: flights.map(f => {
+        const availableSeats = Number(f.available_seats !== undefined ? f.available_seats : (f.availableSeats ?? 80));
+        const totalSeats = Number(f.total_seats !== undefined ? f.total_seats : (f.totalSeats ?? 80));
+        return {
+          id: f.id,
+          flightNumber: f.flight_number,
+          airline: f.airline,
+          from: f.origin,
+          to: f.destination,
+          departure: f.departure_time,
+          arrival: f.arrival_time,
+          duration: f.duration,
+          price: Number(f.base_price),
+          availableSeats,
+          totalSeats,
+          aircraft: f.aircraft_id === 1 ? 'Airbus A320neo' : 'Boeing 737-800',
+          status: f.status,
+        };
+      }),
       ...(sortMetadata ? { sortMetadata } : {}),
     });
   } catch (err) {
@@ -61,8 +75,27 @@ export async function getFlights(req, res, next) {
 
 export async function getFlightById(req, res, next) {
   try {
-    const flightId = Number(req.params.id);
-    const result = await db.query('SELECT * FROM flights WHERE id = $1', [flightId]);
+    const rawId = req.params.id;
+    const flightId = parseInt(rawId, 10);
+    if (isNaN(flightId) || flightId <= 0 || String(flightId) !== String(rawId).trim()) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_ID',
+          message: `Invalid flight ID "${rawId}". Flight ID must be a positive integer.`,
+        },
+      });
+    }
+
+    const result = await db.query(`
+      SELECT 
+        f.*,
+        COALESCE(COUNT(s.id) FILTER (WHERE s.status = 'available'), 0)::int AS available_seats,
+        COALESCE(COUNT(s.id), 0)::int AS total_seats
+      FROM flights f
+      LEFT JOIN seats s ON s.flight_id = f.id
+      WHERE f.id = $1
+      GROUP BY f.id
+    `, [flightId]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -74,6 +107,9 @@ export async function getFlightById(req, res, next) {
     }
 
     const f = result.rows[0];
+    const availableSeats = Number(f.available_seats !== undefined ? f.available_seats : (f.availableSeats ?? 80));
+    const totalSeats = Number(f.total_seats !== undefined ? f.total_seats : (f.totalSeats ?? 80));
+
     res.status(200).json({
       flight: {
         id: f.id,
@@ -85,8 +121,8 @@ export async function getFlightById(req, res, next) {
         arrival: f.arrival_time,
         duration: f.duration,
         price: Number(f.base_price),
-        availableSeats: f.availableSeats ?? 80,
-        totalSeats: f.totalSeats ?? 80,
+        availableSeats,
+        totalSeats,
         status: f.status,
       },
     });
@@ -97,7 +133,16 @@ export async function getFlightById(req, res, next) {
 
 export async function getFlightSeats(req, res, next) {
   try {
-    const flightId = Number(req.params.id);
+    const rawId = req.params.id;
+    const flightId = parseInt(rawId, 10);
+    if (isNaN(flightId) || flightId <= 0 || String(flightId) !== String(rawId).trim()) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_ID',
+          message: `Invalid flight ID "${rawId}". Flight ID must be a positive integer.`,
+        },
+      });
+    }
 
     // Verify flight exists
     const flightCheck = await db.query('SELECT id FROM flights WHERE id = $1', [flightId]);
@@ -110,7 +155,7 @@ export async function getFlightSeats(req, res, next) {
       });
     }
 
-    const result = await db.query('SELECT * FROM seats WHERE flight_id = $1', [flightId]);
+    const result = await db.query('SELECT * FROM seats WHERE flight_id = $1 ORDER BY row_number ASC, col_letter ASC', [flightId]);
 
     res.status(200).json({
       flightId,
